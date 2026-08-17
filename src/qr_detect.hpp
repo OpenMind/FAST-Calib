@@ -10,6 +10,7 @@ which is included as part of this source code package.
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <opencv2/aruco.hpp>
+#include <opencv2/calib3d.hpp>
 #include "common_lib.h"
 
 class QRDetect
@@ -186,8 +187,8 @@ class QRDetect
           double y = tvecs[i][1];
           double z = tvecs[i][2];
 
-          cv::aruco::drawAxis(imageCopy_, cameraMatrix_, distCoeffs_, rvecs[i],
-                              tvecs[i], 0.1);
+          cv::drawFrameAxes(imageCopy_, cameraMatrix_, distCoeffs_, rvecs[i],
+                            tvecs[i], 0.1);
 
           // Accumulate pose for initial guess
           tvec[0] += tvecs[i][0];
@@ -226,7 +227,7 @@ class QRDetect
 
         // cout << "board: " <<  tvec[0] << ", "<< tvec[1] << ", " << tvec[2] << std::endl;
 
-        cv::aruco::drawAxis(imageCopy_, cameraMatrix_, distCoeffs_, rvec, tvec, 0.2);
+        cv::drawFrameAxes(imageCopy_, cameraMatrix_, distCoeffs_, rvec, tvec, 0.2);
 
         // Build transformation matrix to calibration target axis
         cv::Mat R(3, 3, cv::DataType<float>::type);
