@@ -13,9 +13,8 @@ which is included as part of this source code package.
 #include <pcl/point_types.h>
 #include <pcl/segmentation/sac_segmentation.h>
 #include <pcl/filters/extract_indices.h>
+#include <pcl/filters/passthrough.h>
 #include <pcl/common/transforms.h>
-#include <pcl_ros/point_cloud.h>
-#include <pcl_ros/filters/passthrough.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/filters/statistical_outlier_removal.h>
 #include <pcl/features/boundary.h>
@@ -26,8 +25,9 @@ which is included as part of this source code package.
 #include <pcl/registration/transformation_estimation_svd.h>
 #include <cmath>
 #include <opencv2/opencv.hpp>
-#include <tf/tf.h>
+#include <rclcpp/rclcpp.hpp>
 #include "color.h"
+#include "utils/ros_params.h"
 
 using namespace std;
 using namespace cv;
@@ -68,33 +68,33 @@ struct Params {
 };
 
 // 读取参数
-Params loadParameters(ros::NodeHandle &nh) {
+Params loadParameters(rclcpp::Node *node) {
   Params params;
-  nh.param("fx", params.fx, 1215.31801774424);
-  nh.param("fy", params.fy, 1214.72961288138);
-  nh.param("cx", params.cx, 1047.86571859677);
-  nh.param("cy", params.cy, 745.068353101898);
-  nh.param("k1", params.k1, -0.33574781188503);
-  nh.param("k2", params.k2, 0.10996870793601);
-  nh.param("p1", params.p1, 0.000157303079833973);
-  nh.param("p2", params.p2, 0.000544930726278493);
-  nh.param("marker_size", params.marker_size, 0.2);
-  nh.param("delta_width_qr_center", params.delta_width_qr_center, 0.55);
-  nh.param("delta_height_qr_center", params.delta_height_qr_center, 0.35);
-  nh.param("delta_width_circles", params.delta_width_circles, 0.5);
-  nh.param("delta_height_circles", params.delta_height_circles, 0.4);
-  nh.param("min_detected_markers", params.min_detected_markers, 3);
-  nh.param("circle_radius", params.circle_radius, 0.12);
-  nh.param("image_path", params.image_path, string("/home/chunran/calib_ws/src/fast_calib/data/image.png"));
-  nh.param("bag_path", params.bag_path, string("/home/chunran/calib_ws/src/fast_calib/data/input.bag"));
-  nh.param("lidar_topic", params.lidar_topic, string("/livox/lidar"));
-  nh.param("output_path", params.output_path, string("/home/chunran/calib_ws/src/fast_calib/output"));
-  nh.param("x_min", params.x_min, 1.5);
-  nh.param("x_max", params.x_max, 3.0);
-  nh.param("y_min", params.y_min, -1.5);
-  nh.param("y_max", params.y_max, 2.0);
-  nh.param("z_min", params.z_min, -0.5);
-  nh.param("z_max", params.z_max, 2.0);
+  params.fx = ros_params::value(node, "fx", 1215.31801774424);
+  params.fy = ros_params::value(node, "fy", 1214.72961288138);
+  params.cx = ros_params::value(node, "cx", 1047.86571859677);
+  params.cy = ros_params::value(node, "cy", 745.068353101898);
+  params.k1 = ros_params::value(node, "k1", -0.33574781188503);
+  params.k2 = ros_params::value(node, "k2", 0.10996870793601);
+  params.p1 = ros_params::value(node, "p1", 0.000157303079833973);
+  params.p2 = ros_params::value(node, "p2", 0.000544930726278493);
+  params.marker_size = ros_params::value(node, "marker_size", 0.2);
+  params.delta_width_qr_center = ros_params::value(node, "delta_width_qr_center", 0.55);
+  params.delta_height_qr_center = ros_params::value(node, "delta_height_qr_center", 0.35);
+  params.delta_width_circles = ros_params::value(node, "delta_width_circles", 0.5);
+  params.delta_height_circles = ros_params::value(node, "delta_height_circles", 0.4);
+  params.min_detected_markers = ros_params::value(node, "min_detected_markers", 3);
+  params.circle_radius = ros_params::value(node, "circle_radius", 0.12);
+  params.image_path = ros_params::value<string>(node, "image_path", string("/home/chunran/calib_ws/src/fast_calib/data/image.png"));
+  params.bag_path = ros_params::value<string>(node, "bag_path", string("/home/chunran/calib_ws/src/fast_calib/data/input_bag"));
+  params.lidar_topic = ros_params::value<string>(node, "lidar_topic", string("/livox/lidar"));
+  params.output_path = ros_params::value<string>(node, "output_path", string("/home/chunran/calib_ws/src/fast_calib/output"));
+  params.x_min = ros_params::value(node, "x_min", 1.5);
+  params.x_max = ros_params::value(node, "x_max", 3.0);
+  params.y_min = ros_params::value(node, "y_min", -1.5);
+  params.y_max = ros_params::value(node, "y_max", 2.0);
+  params.z_min = ros_params::value(node, "z_min", -0.5);
+  params.z_max = ros_params::value(node, "z_max", 2.0);
   return params;
 }
 

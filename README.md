@@ -29,21 +29,23 @@ In short, it makes extrinsic calibration as simple as intrinsic calibration.
 </p>
 
 ## 1. Prerequisites
-PCL>=1.8, OpenCV>=4.0.
+ROS 2 (tested on Humble), PCL>=1.8, OpenCV>=4.0.
+
+The Livox `CustomMsg` lidar input is optional: if [`livox_ros_driver2`](https://github.com/Livox-SDK/livox_ros_driver2) is built in your workspace it is picked up automatically; otherwise FAST-Calib still builds and works with any `sensor_msgs/PointCloud2` LiDAR.
 
 ## 2. Run our examples
 1. Prepare the static acquisition data in the `calib_data` folder (see [Single-scene Calibration Sample Data](https://drive.google.com/drive/folders/1W87Dx3MUuPhTpCLvaavWqNUJZV03yU6L?usp=drive_link) from Mid360, Avia and Ouster, and [Multi-scene Calibration Sample Data](https://drive.google.com/drive/folders/1g__plgFqp5tsk-TY7Ioh4RXru62AdLmr?usp=drive_link) from Avia):
-- rosbag containing point cloud messages
+- a ROS 2 bag (directory containing `metadata.yaml`) with the point cloud topic, e.g. recorded with `ros2 bag record /livox/lidar`
 - corresponding image
 
 2. Run the single-scene calibration process:
 ```bash
-roslaunch fast_calib calib.launch
+ros2 launch fast_calib calib.launch.py bag_path:=/path/to/bag image_path:=/path/to/image.jpg
 ```
 
 3. After completing Step 2 for at least three different scenes, you can perform multi-scene joint calibration:
 ```bash
-roslaunch fast_calib multi_calib.launch
+ros2 launch fast_calib multi_calib.launch.py
 ```
 
 ## 3. Run on your own sensor suite

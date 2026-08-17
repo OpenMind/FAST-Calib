@@ -9,10 +9,9 @@ which is included as part of this source code package.
 #define LIDAR_DETECT_HPP
 #define PCL_NO_PRECOMPILE
 
-#include <sensor_msgs/PointCloud2.h>
-#include <geometry_msgs/PointStamped.h>
+#include <sensor_msgs/msg/point_cloud2.hpp>
 #include <Eigen/Dense>
-#include <ros/ros.h>
+#include <rclcpp/rclcpp.hpp>
 #include <pcl/filters/voxel_grid.h>
 #include "common_lib.h"
 
@@ -21,6 +20,7 @@ class LidarDetect
 private:
     double x_min_, x_max_, y_min_, y_max_, z_min_, z_max_;
     double circle_radius_, delta_width_circles_, delta_height_circles_;
+    rclcpp::Logger logger_;
 
     // 存储中间结果的点云
     pcl::PointCloud<Common::Point>::Ptr filtered_cloud_;
@@ -30,15 +30,16 @@ private:
     pcl::PointCloud<pcl::PointXYZ>::Ptr center_z0_cloud_;
 
 public:
-    ros::Publisher filtered_pub_;
-    ros::Publisher plane_pub_;
-    ros::Publisher aligned_pub_;
-    ros::Publisher edge_pub_;
-    ros::Publisher center_z0_pub_;
-    ros::Publisher center_pub_;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr filtered_pub_;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr plane_pub_;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr aligned_pub_;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr edge_pub_;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr center_z0_pub_;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr center_pub_;
 
-    LidarDetect(ros::NodeHandle &nh, Params &params)
-        : filtered_cloud_(new pcl::PointCloud<Common::Point>),
+    LidarDetect(const rclcpp::Node::SharedPtr &node, Params &params)
+        : logger_(node->get_logger()),
+          filtered_cloud_(new pcl::PointCloud<Common::Point>),
           plane_cloud_(new pcl::PointCloud<Common::Point>),
           aligned_cloud_(new pcl::PointCloud<pcl::PointXYZ>),
           edge_cloud_(new pcl::PointCloud<pcl::PointXYZ>),
@@ -54,12 +55,12 @@ public:
         delta_width_circles_ = params.delta_width_circles;
         delta_height_circles_ = params.delta_height_circles;
 
-        filtered_pub_ = nh.advertise<sensor_msgs::PointCloud2>("filtered_cloud", 1);
-        plane_pub_ = nh.advertise<sensor_msgs::PointCloud2>("plane_cloud", 1);
-        aligned_pub_ = nh.advertise<sensor_msgs::PointCloud2>("aligned_cloud", 1);
-        edge_pub_ = nh.advertise<sensor_msgs::PointCloud2>("edge_cloud", 1);
-        center_z0_pub_ = nh.advertise<sensor_msgs::PointCloud2>("center_z0_cloud", 10);
-        center_pub_ = nh.advertise<sensor_msgs::PointCloud2>("center_cloud", 10);
+        filtered_pub_ = node->create_publisher<sensor_msgs::msg::PointCloud2>("filtered_cloud", 1);
+        plane_pub_ = node->create_publisher<sensor_msgs::msg::PointCloud2>("plane_cloud", 1);
+        aligned_pub_ = node->create_publisher<sensor_msgs::msg::PointCloud2>("aligned_cloud", 1);
+        edge_pub_ = node->create_publisher<sensor_msgs::msg::PointCloud2>("edge_cloud", 1);
+        center_z0_pub_ = node->create_publisher<sensor_msgs::msg::PointCloud2>("center_z0_cloud", 10);
+        center_pub_ = node->create_publisher<sensor_msgs::msg::PointCloud2>("center_cloud", 10);
     }
 
     void detect_mech_lidar(pcl::PointCloud<Common::Point>::Ptr cloud, pcl::PointCloud<pcl::PointXYZ>::Ptr center_cloud)
@@ -85,7 +86,7 @@ public:
         pass_z.setFilterLimits(z_min_, z_max_);  // 设置Z轴范围
         pass_z.filter(*filtered_cloud_);
 
-        ROS_INFO("Depth filtered cloud size: %zu", filtered_cloud_->size());
+        RCLCPP_INFO(logger_, "Depth filtered cloud size: %zu", filtered_cloud_->size());
 
         // 2. 拟合平面，提取法向量
         plane_cloud_->reserve(filtered_cloud_->size());
@@ -103,7 +104,7 @@ public:
         extract.setInputCloud(filtered_cloud_);
         extract.setIndices(plane_inliers);
         extract.filter(*plane_cloud_);
-        ROS_INFO("Plane cloud size: %zu", plane_cloud_->size());
+        RCLCPP_INFO(logger_, "Plane cloud size: %zu", plane_cloud_->size());
     
         // 3. 根据每条ring相邻点距离提取边缘点
         edge_cloud_->reserve(filtered_cloud_->size());
@@ -162,7 +163,7 @@ public:
             }
         }
 
-        ROS_INFO("Extracted %zu edge points (mechanical LiDAR by neighbor distance).", edge_cloud_->size());
+        RCLCPP_INFO(logger_, "Extracted %zu edge points (mechanical LiDAR by neighbor distance).", edge_cloud_->size());
 
         // 4. 将边缘点对齐到 Z=0 平面
         aligned_cloud_->reserve(edge_cloud_->size());
@@ -189,7 +190,7 @@ public:
         // 拷贝一份工作点云，后面要不停“删掉已拟合的圆”
         pcl::PointCloud<pcl::PointXYZ>::Ptr xy_cloud(new pcl::PointCloud<pcl::PointXYZ>(*aligned_cloud_));
 
-        ROS_INFO("[LiDAR] Start circle detection, initial cloud size = %zu", xy_cloud->points.size());
+        RCLCPP_INFO(logger_, "[LiDAR] Start circle detection, initial cloud size = %zu", xy_cloud->points.size());
 
         // 在对齐后的平面上，用 RANSAC 反复检测 2D 圆
         pcl::SACSegmentation<pcl::PointXYZ> circle_segmentation;
@@ -207,7 +208,7 @@ public:
         // 不停在剩余点云中找圆
         while (xy_cloud->points.size() > 3)
         {
-            ROS_INFO("[LiDAR] RANSAC on cloud of size %lu", xy_cloud->points.size());
+            RCLCPP_INFO(logger_, "[LiDAR] RANSAC on cloud of size %lu", xy_cloud->points.size());
 
             circle_segmentation.setInputCloud(xy_cloud);
             circle_segmentation.segment(*inliers, *coefficients);
@@ -215,24 +216,24 @@ public:
             // 没有 inliers，说明没有可用的圆，结束
             if (inliers->indices.empty())
             {
-                ROS_INFO("[LiDAR] No more circles can be found, stop.");
+                RCLCPP_INFO(logger_, "[LiDAR] No more circles can be found, stop.");
                 break;
             }
 
             // 内点太少就认为是噪声，直接结束
             if ((int)inliers->indices.size() < 5)
             {
-                ROS_INFO("[LiDAR] Found circle but inliers too few (%zu < 3), stop.",
+                RCLCPP_INFO(logger_, "[LiDAR] Found circle but inliers too few (%zu < 3), stop.",
                             inliers->indices.size());
                 break;
             }
 
-            // ROS_INFO("[LiDAR] Circle found: inliers = %zu, coeffs size = %zu",
+            // RCLCPP_INFO(logger_, "[LiDAR] Circle found: inliers = %zu, coeffs size = %zu",
             //         inliers->indices.size(), coefficients->values.size());
             // 对 Circle2D 而言，coeffs 通常是 [xc, yc, r]
             // if (coefficients->values.size() >= 3)
             // {
-            //     ROS_INFO("[LiDAR]   center = (%.4f, %.4f), r = %.4f",
+            //     RCLCPP_INFO(logger_, "[LiDAR]   center = (%.4f, %.4f), r = %.4f",
             //             coefficients->values[0],
             //             coefficients->values[1],
             //             coefficients->values[2]);
@@ -286,7 +287,7 @@ public:
             if (best_candidate_score == 1 && groups_scores[i] == 1) 
             {
                 // Exit 4: Several candidates fit target's geometry
-                ROS_ERROR(
+                RCLCPP_ERROR(logger_, 
                     "[LiDAR] More than one set of candidates fit target's geometry. "
                     "Please, make sure your parameters are well set. Exiting callback");
                 return;
@@ -300,7 +301,7 @@ public:
         if (best_candidate_idx == -1) 
         {
             // Exit 5: No candidates fit target's geometry
-            ROS_WARN(
+            RCLCPP_WARN(logger_, 
                 "[LiDAR] Unable to find a candidate set that matches target's "
                 "geometry");
             return;
@@ -350,13 +351,13 @@ public:
         pass_z.setFilterLimits(z_min_, z_max_);  // 设置Z轴范围
         pass_z.filter(*filtered_cloud_);
     
-        ROS_INFO("Filtered cloud size: %zu", filtered_cloud_->size());
+        RCLCPP_INFO(logger_, "Filtered cloud size: %zu", filtered_cloud_->size());
         
         pcl::VoxelGrid<Common::Point> voxel_filter;
         voxel_filter.setInputCloud(filtered_cloud_);
         voxel_filter.setLeafSize(0.005f, 0.005f, 0.005f);
         voxel_filter.filter(*filtered_cloud_);
-        ROS_INFO("Filtered cloud size: %zu", filtered_cloud_->size());
+        RCLCPP_INFO(logger_, "Filtered cloud size: %zu", filtered_cloud_->size());
 
         // 2. 平面分割
         plane_cloud_->reserve(filtered_cloud_->size());
@@ -374,7 +375,7 @@ public:
         extract.setInputCloud(filtered_cloud_);
         extract.setIndices(plane_inliers);
         extract.filter(*plane_cloud_);
-        ROS_INFO("Plane cloud size: %zu", plane_cloud_->size());
+        RCLCPP_INFO(logger_, "Plane cloud size: %zu", plane_cloud_->size());
     
         // 3. 平面点云对齐   
         aligned_cloud_->reserve(plane_cloud_->size());
@@ -425,7 +426,7 @@ public:
                 edge_cloud_->push_back(aligned_cloud_->points[i]);
             }
         }
-        ROS_INFO("Extracted %zu edge points.", edge_cloud_->size());
+        RCLCPP_INFO(logger_, "Extracted %zu edge points.", edge_cloud_->size());
 
         // 5. 对边缘点进行聚类
         pcl::search::KdTree<pcl::PointXYZ>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZ>);
@@ -440,7 +441,7 @@ public:
         ec.setInputCloud(edge_cloud_);
         ec.extract(cluster_indices);
     
-        ROS_INFO("Number of edge clusters: %zu", cluster_indices.size());
+        RCLCPP_INFO(logger_, "Number of edge clusters: %zu", cluster_indices.size());
     
         // 6. 对每个聚类进行圆拟合
         center_z0_cloud_->reserve(4);
