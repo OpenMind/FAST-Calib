@@ -42,8 +42,17 @@ class QRDetect
                                                 0, params.fy, params.cy,
                                                 0,         0,        1);
 
-      // Initialize distortion coefficients
-      distCoeffs_ = (cv::Mat_<float>(1, 5) << params.k1, params.k2, params.p1, params.p2, 0);
+      // Initialize distortion coefficients: a full OpenCV vector (e.g. the
+      // 8/14-coefficient rational model) takes precedence over k1/k2/p1/p2
+      if (!params.dist_coeffs.empty())
+      {
+        distCoeffs_ = cv::Mat(params.dist_coeffs, true).reshape(1, 1);
+        distCoeffs_.convertTo(distCoeffs_, CV_32F);
+      }
+      else
+      {
+        distCoeffs_ = (cv::Mat_<float>(1, 5) << params.k1, params.k2, params.p1, params.p2, 0);
+      }
 
       // Initialize QR dictionary
       dictionary_ = cv::aruco::getPredefinedDictionary(cv::aruco::DICT_6X6_250);

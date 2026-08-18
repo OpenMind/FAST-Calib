@@ -18,6 +18,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(rosbag2_cpp REQUIRED)
 find_package(rosbag2_storage REQUIRED)
+find_package(cv_bridge REQUIRED)
 
 set(dependencies
   rclcpp
@@ -25,6 +26,7 @@ set(dependencies
   pcl_conversions
   rosbag2_cpp
   rosbag2_storage
+  cv_bridge
 )
 
 # The Livox CustomMsg input is optional: without livox_ros_driver2 the tool

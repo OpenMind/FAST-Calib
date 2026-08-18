@@ -58,6 +58,10 @@ POINT_CLOUD_REGISTER_POINT_STRUCT(Common::Point,
 struct Params {
   double x_min, x_max, y_min, y_max, z_min, z_max;
   double fx, fy, cx, cy, k1, k2, p1, p2;
+  // Optional full OpenCV distortion vector (5, 8, 12 or 14 coefficients, e.g. the
+  // rational model [k1,k2,p1,p2,k3,k4,k5,k6,...]). When non-empty it replaces
+  // k1/k2/p1/p2 everywhere OpenCV consumes distortion.
+  std::vector<double> dist_coeffs;
   double marker_size, delta_width_qr_center, delta_height_qr_center;
   double delta_width_circles, delta_height_circles, circle_radius;
   int min_detected_markers;
@@ -82,6 +86,7 @@ Params loadParameters(rclcpp::Node *node) {
   params.k2 = ros_params::value(node, "k2", 0.10996870793601);
   params.p1 = ros_params::value(node, "p1", 0.000157303079833973);
   params.p2 = ros_params::value(node, "p2", 0.000544930726278493);
+  params.dist_coeffs = ros_params::value(node, "dist_coeffs", std::vector<double>{});
   params.marker_size = ros_params::value(node, "marker_size", 0.2);
   params.delta_width_qr_center = ros_params::value(node, "delta_width_qr_center", 0.55);
   params.delta_height_qr_center = ros_params::value(node, "delta_height_qr_center", 0.35);
@@ -304,6 +309,18 @@ void saveCalibrationResults(const Params& params, const Eigen::Matrix4f& transfo
     outFile << "cam_d1: " << params.k2 << "\n";
     outFile << "cam_d2: " << params.p1 << "\n";
     outFile << "cam_d3: " << params.p2 << "\n";
+    if (!params.dist_coeffs.empty())
+    {
+      outFile << "# NOTE: this camera was calibrated with a full OpenCV distortion model;\n";
+      outFile << "# cam_d0..d3 above are NOT a valid plumb-bob approximation. Full vector:\n";
+      outFile << "# dist_coeffs: [";
+      for (size_t i = 0; i < params.dist_coeffs.size(); ++i)
+        outFile << params.dist_coeffs[i] << (i + 1 < params.dist_coeffs.size() ? ", " : "");
+      outFile << "]\n";
+      std::cout << BOLDYELLOW << "[Result] Camera uses a full distortion model: consumers of "
+                << "single_calib_result.txt must use the dist_coeffs comment (or undistorted images), "
+                << "not cam_d0..d3." << RESET << std::endl;
+    }
 
     outFile << "\nRcl: [" << std::fixed << std::setprecision(6);
     outFile << std::setw(10) << transformation(0, 0) << ", " << std::setw(10) << transformation(0, 1) << ", " << std::setw(10) << transformation(0, 2) << ",\n";

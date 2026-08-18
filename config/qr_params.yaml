@@ -41,15 +41,33 @@
       # p1: -0.00127118592043482
       # p2: -0.00200379689523022
 
-      # SM_USB_107X_1 (RTSP camera, 1280x720, from SM_USB_107X_1.json)
-      fx: 619.97674
-      fy: 625.27679
-      cx: 586.32027
-      cy: 339.90312
-      k1: -0.291149
-      k2: 0.057760
-      p1: -0.006811
-      p2: 0.001601
+      # SM_USB_107X_1 (RTSP camera on desktop rig, 1280x720, from SM_USB_107X_1.json)
+      # -- uncomment this block (and comment the arducam one) for the RTSP camera --
+      # fx: 619.97674
+      # fy: 625.27679
+      # cx: 586.32027
+      # cy: 339.90312
+      # k1: -0.291149
+      # k2: 0.057760
+      # p1: -0.006811
+      # p2: 0.001601
+
+      # Arducam on Thor (usb_cam -> /image_raw, 1280x720, reproj err 0.46 px).
+      # Calibrated with OpenCV's rational model: dist_coeffs below carries the
+      # full vector [k1,k2,p1,p2,k3,k4,k5,k6,s1..s4,tx,ty] and takes precedence
+      # over k1/k2/p1/p2 (which are set to the first four only for bookkeeping —
+      # they are NOT a valid plumb-bob approximation on their own).
+      fx: 511.79246949692924
+      fy: 513.2789160031481
+      cx: 630.9203419102503
+      cy: 407.51933268386256
+      k1: 0.9749138619448048
+      k2: 0.15751875885481165
+      p1: -0.00009856365200279458
+      p2: -0.000011905649738725722
+      dist_coeffs: [0.9749138619448048, 0.15751875885481165, -0.00009856365200279458,
+                    -0.000011905649738725722, 0.0018831819275335097, 1.3296460555667469,
+                    0.4032288768892183, 0.0191029877983961, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
     # Calibration target parameters
       marker_size: 0.20 # ArUco marker size (our test data uses 0.16m; adjust to match your marker size)

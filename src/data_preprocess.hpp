@@ -21,6 +21,8 @@ which is included as part of this source code package.
 #include <rosbag2_storage/storage_options.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
+#include <sensor_msgs/msg/image.hpp>
+#include <cv_bridge/cv_bridge.h>
 #ifdef FAST_CALIB_LIVOX_ENABLED
 #include <livox_ros_driver2/msg/custom_msg.hpp>
 #endif
@@ -48,21 +50,15 @@ public:
     DataPreprocess(const rclcpp::Node::SharedPtr &node, Params &params)
         : cloud_input_(new pcl::PointCloud<Common::Point>)
     {
-        // 图像：rtsp:// 地址走实时抓帧，否则按文件读取
+        // 图像来源三选一：rtsp:// 地址实时抓帧；存在的文件按文件读取；
+        // 以 "/" 开头且不是文件则按 ROS 图像 topic 订阅一帧（如 /image_raw）
+        bool live_frame = false;
         if (params.image_path.rfind("rtsp://", 0) == 0)
         {
             captureImageFromRtsp(params.image_path, params.rtsp_warmup_frames);
-            if (!img_input_.empty())
-            {
-                std::string out = params.output_path;
-                if (!out.empty() && out.back() != '/') out += '/';
-                const std::string frame_path = out + "rtsp_frame.jpg";
-                if (cv::imwrite(frame_path, img_input_))
-                    RCLCPP_INFO(rclcpp::get_logger("fast_calib"),
-                                "Saved the captured RTSP frame to %s for inspection.", frame_path.c_str());
-            }
+            live_frame = true;
         }
-        else
+        else if (std::ifstream(params.image_path).good())
         {
             img_input_ = cv::imread(params.image_path, cv::IMREAD_UNCHANGED);
             if (img_input_.empty())
@@ -70,6 +66,28 @@ public:
                 RCLCPP_ERROR(rclcpp::get_logger("fast_calib"), "Loading the image %s failed", params.image_path.c_str());
                 return;
             }
+        }
+        else if (params.image_path.rfind("/", 0) == 0)
+        {
+            captureImageFromTopic(node, params.image_path);
+            live_frame = true;
+        }
+        else
+        {
+            RCLCPP_ERROR(rclcpp::get_logger("fast_calib"),
+                         "image_path '%s' is neither an existing file, an rtsp:// URL, nor a ROS topic",
+                         params.image_path.c_str());
+            return;
+        }
+
+        if (live_frame && !img_input_.empty())
+        {
+            std::string out = params.output_path;
+            if (!out.empty() && out.back() != '/') out += '/';
+            const std::string frame_path = out + "rtsp_frame.jpg";
+            if (cv::imwrite(frame_path, img_input_))
+                RCLCPP_INFO(rclcpp::get_logger("fast_calib"),
+                            "Saved the captured frame to %s for inspection.", frame_path.c_str());
         }
 
         // 点云：bag_path 为空时走实时订阅，否则按 bag 读取
@@ -129,6 +147,40 @@ private:
         img_input_ = frame.clone();
         RCLCPP_INFO(rclcpp::get_logger("fast_calib"), "Captured a %dx%d frame from %s.",
                     img_input_.cols, img_input_.rows, url.c_str());
+    }
+
+    void captureImageFromTopic(const rclcpp::Node::SharedPtr &node, const std::string &topic)
+    {
+        RCLCPP_INFO(rclcpp::get_logger("fast_calib"), "Waiting for one frame on image topic %s ...", topic.c_str());
+        auto sub = node->create_subscription<sensor_msgs::msg::Image>(
+            topic, rclcpp::SensorDataQoS(),
+            [this](const sensor_msgs::msg::Image::SharedPtr msg)
+            {
+                if (!img_input_.empty()) return;
+                try
+                {
+                    img_input_ = cv_bridge::toCvCopy(msg, "bgr8")->image;
+                }
+                catch (const std::exception &e)
+                {
+                    RCLCPP_ERROR(rclcpp::get_logger("fast_calib"),
+                                 "cv_bridge conversion failed (encoding '%s'): %s",
+                                 msg->encoding.c_str(), e.what());
+                }
+            });
+
+        const rclcpp::Time start = node->now();
+        rclcpp::Rate rate(50);
+        while (rclcpp::ok() && img_input_.empty() && (node->now() - start).seconds() < 10.0)
+        {
+            rclcpp::spin_some(node);
+            rate.sleep();
+        }
+        if (img_input_.empty())
+            RCLCPP_ERROR(rclcpp::get_logger("fast_calib"), "No image received on %s within 10 s", topic.c_str());
+        else
+            RCLCPP_INFO(rclcpp::get_logger("fast_calib"), "Captured a %dx%d frame from topic %s.",
+                        img_input_.cols, img_input_.rows, topic.c_str());
     }
 
     void appendPointCloud2(const sensor_msgs::msg::PointCloud2 &pcl_msg)
