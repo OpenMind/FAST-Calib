@@ -83,4 +83,4 @@
     # lidar_topic, bag_path, image_path and output_path default to package-relative
     # paths in the launch files below (see calib.launch.py / multi_calib.launch.py),
     # which is where you should override them for your own data.
-      lidar_topic: "/livox/lidar" # /ouster/points /livox/lidar
+      lidar_topic: "/lidar_points_front" # /ouster/points /livox/lidar

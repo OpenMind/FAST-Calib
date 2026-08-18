@@ -25,7 +25,7 @@ int main(int argc, char **argv)
     lidarDetectPtr.reset(new LidarDetect(node, params));
 
     DataPreprocessPtr dataPreprocessPtr;
-    dataPreprocessPtr.reset(new DataPreprocess(params));
+    dataPreprocessPtr.reset(new DataPreprocess(node, params));
 
     // 读取图像和点云
     cv::Mat img_input = dataPreprocessPtr->img_input_;

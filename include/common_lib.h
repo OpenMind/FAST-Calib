@@ -65,6 +65,8 @@ struct Params {
   string bag_path;
   string lidar_topic;
   string output_path;
+  double live_capture_seconds;
+  int rtsp_warmup_frames;
 };
 
 // 读取参数
@@ -89,6 +91,10 @@ Params loadParameters(rclcpp::Node *node) {
   params.bag_path = ros_params::value<string>(node, "bag_path", string("/home/chunran/calib_ws/src/fast_calib/data/input_bag"));
   params.lidar_topic = ros_params::value<string>(node, "lidar_topic", string("/livox/lidar"));
   params.output_path = ros_params::value<string>(node, "output_path", string("/home/chunran/calib_ws/src/fast_calib/output"));
+  // Live capture: used when bag_path is empty (subscribe lidar_topic instead of reading a bag)
+  // and/or image_path is an rtsp:// URL (grab a frame instead of reading a file).
+  params.live_capture_seconds = ros_params::value(node, "live_capture_seconds", 3.0);
+  params.rtsp_warmup_frames = ros_params::value(node, "rtsp_warmup_frames", 15);
   params.x_min = ros_params::value(node, "x_min", 1.5);
   params.x_max = ros_params::value(node, "x_max", 3.0);
   params.y_min = ros_params::value(node, "y_min", -1.5);

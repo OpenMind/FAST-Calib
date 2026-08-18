@@ -44,21 +44,129 @@ public:
     LiDARType lidar_type_{LiDARType::Unknown};
     LiDARType lidarType() const { return lidar_type_; }
 
-    DataPreprocess(Params &params)
+    DataPreprocess(const rclcpp::Node::SharedPtr &node, Params &params)
         : cloud_input_(new pcl::PointCloud<Common::Point>)
     {
-        string bag_path   = params.bag_path;
-        string image_path = params.image_path;
-        string lidar_topic = params.lidar_topic;
-
-        // 读图像
-        img_input_ = cv::imread(image_path, cv::IMREAD_UNCHANGED);
-        if (img_input_.empty())
+        // 图像：rtsp:// 地址走实时抓帧，否则按文件读取
+        if (params.image_path.rfind("rtsp://", 0) == 0)
         {
-            RCLCPP_ERROR(rclcpp::get_logger("fast_calib"), "Loading the image %s failed", image_path.c_str());
+            captureImageFromRtsp(params.image_path, params.rtsp_warmup_frames);
+        }
+        else
+        {
+            img_input_ = cv::imread(params.image_path, cv::IMREAD_UNCHANGED);
+            if (img_input_.empty())
+            {
+                RCLCPP_ERROR(rclcpp::get_logger("fast_calib"), "Loading the image %s failed", params.image_path.c_str());
+                return;
+            }
+        }
+
+        // 点云：bag_path 为空时走实时订阅，否则按 bag 读取
+        if (params.bag_path.empty())
+        {
+            captureLidarLive(node, params.lidar_topic, params.live_capture_seconds);
+        }
+        else
+        {
+            loadLidarFromBag(params.bag_path, params.lidar_topic);
+        }
+    }
+
+private:
+    void captureImageFromRtsp(const std::string &url, int warmup_frames)
+    {
+        RCLCPP_INFO(rclcpp::get_logger("fast_calib"), "Connecting to RTSP camera stream %s ...", url.c_str());
+        cv::VideoCapture cap(url, cv::CAP_FFMPEG);
+        if (!cap.isOpened())
+        {
+            RCLCPP_ERROR(rclcpp::get_logger("fast_calib"), "Failed to connect to RTSP stream: %s", url.c_str());
             return;
         }
 
+        cv::Mat frame;
+        // Drain buffered/stale frames so the one we keep reflects the current scene.
+        for (int i = 0; i < warmup_frames; ++i) cap.read(frame);
+
+        if (frame.empty())
+        {
+            RCLCPP_ERROR(rclcpp::get_logger("fast_calib"), "Failed to grab a frame from RTSP stream: %s", url.c_str());
+            return;
+        }
+        img_input_ = frame.clone();
+        RCLCPP_INFO(rclcpp::get_logger("fast_calib"), "Captured a %dx%d frame from %s.",
+                    img_input_.cols, img_input_.rows, url.c_str());
+    }
+
+    void appendPointCloud2(const sensor_msgs::msg::PointCloud2 &pcl_msg)
+    {
+        // 优先判断是否有 ring 字段
+        bool has_ring = false;
+        for (const auto &f : pcl_msg.fields)
+        {
+            if (f.name == "ring") { has_ring = true; break; }
+        }
+        lidar_type_ = has_ring ? LiDARType::Mech : LiDARType::Solid;
+
+        // 使用 iterator 安全读取
+        sensor_msgs::PointCloud2ConstIterator<float> it_x(pcl_msg, "x");
+        sensor_msgs::PointCloud2ConstIterator<float> it_y(pcl_msg, "y");
+        sensor_msgs::PointCloud2ConstIterator<float> it_z(pcl_msg, "z");
+
+        // ring 可能不存在：不存在时用 0xFFFF 表示未知
+        std::unique_ptr<sensor_msgs::PointCloud2ConstIterator<std::uint16_t>> it_ring_ptr;
+        if (has_ring)
+        {
+            it_ring_ptr.reset(new sensor_msgs::PointCloud2ConstIterator<std::uint16_t>(pcl_msg, "ring"));
+        }
+
+        const size_t n = static_cast<size_t>(pcl_msg.width) * pcl_msg.height;
+        cloud_input_->reserve(cloud_input_->size() + n);
+
+        for (size_t i = 0; i < n; ++i, ++it_x, ++it_y, ++it_z)
+        {
+            Common::Point p;
+            p.x = *it_x;
+            p.y = *it_y;
+            p.z = *it_z;
+
+            if (has_ring)
+            {
+                p.ring = **it_ring_ptr;
+                ++(*it_ring_ptr);
+            }
+            else
+            {
+                p.ring = 0xFFFF;
+            }
+
+            cloud_input_->push_back(p);
+        }
+    }
+
+    void captureLidarLive(const rclcpp::Node::SharedPtr &node, const std::string &lidar_topic, double duration_sec)
+    {
+        RCLCPP_INFO(rclcpp::get_logger("fast_calib"), "Subscribing to live LiDAR topic %s for %.1f s ...",
+                    lidar_topic.c_str(), duration_sec);
+
+        auto sub = node->create_subscription<sensor_msgs::msg::PointCloud2>(
+            lidar_topic, rclcpp::SensorDataQoS(),
+            [this](const sensor_msgs::msg::PointCloud2::SharedPtr msg) { appendPointCloud2(*msg); });
+
+        const rclcpp::Time start = node->now();
+        rclcpp::Rate rate(50);
+        while (rclcpp::ok() && (node->now() - start).seconds() < duration_sec)
+        {
+            rclcpp::spin_some(node);
+            rate.sleep();
+        }
+
+        RCLCPP_INFO(rclcpp::get_logger("fast_calib"), "Captured %zu points from live topic %s over %.1f s.",
+                    cloud_input_->size(), lidar_topic.c_str(), duration_sec);
+    }
+
+    void loadLidarFromBag(const std::string &bag_path, const std::string &lidar_topic)
+    {
         // 打开 ROS 2 bag（一个包含 metadata.yaml 的目录）
         rosbag2_storage::StorageOptions storage_options;
         storage_options.uri = bag_path;
@@ -139,54 +247,7 @@ public:
             {
                 sensor_msgs::msg::PointCloud2 pcl_msg;
                 pc2_serialization.deserialize_message(&serialized_msg, &pcl_msg);
-
-                // 优先判断是否有 ring 字段
-                bool has_ring = false;
-                for (const auto &f : pcl_msg.fields)
-                {
-                    if (f.name == "ring") { has_ring = true; break; }
-                }
-
-                // 使用 iterator 安全读取
-                sensor_msgs::PointCloud2ConstIterator<float> it_x(pcl_msg, "x");
-                sensor_msgs::PointCloud2ConstIterator<float> it_y(pcl_msg, "y");
-                sensor_msgs::PointCloud2ConstIterator<float> it_z(pcl_msg, "z");
-
-                // ring 可能不存在：不存在时用 0xFFFF 表示未知
-                std::unique_ptr<sensor_msgs::PointCloud2ConstIterator<std::uint16_t>> it_ring_ptr;
-                if (has_ring)
-                {
-                    it_ring_ptr.reset(new sensor_msgs::PointCloud2ConstIterator<std::uint16_t>(pcl_msg, "ring"));
-                    lidar_type_ = LiDARType::Mech;
-                }
-                else
-                {
-                    lidar_type_ = LiDARType::Solid;
-                }
-
-                const size_t n = static_cast<size_t>(pcl_msg.width) * pcl_msg.height;
-                cloud_input_->reserve(cloud_input_->size() + n);
-
-                for (size_t i = 0; i < n; ++i, ++it_x, ++it_y, ++it_z)
-                {
-                    Common::Point p;
-                    p.x = *it_x;
-                    p.y = *it_y;
-                    p.z = *it_z;
-
-                    if (has_ring)
-                    {
-                        // 解引用 ring 迭代器并前进
-                        p.ring = **it_ring_ptr;
-                        ++(*it_ring_ptr);
-                    }
-                    else
-                    {
-                        p.ring = 0xFFFF; // 未知线号
-                    }
-
-                    cloud_input_->push_back(p);
-                }
+                appendPointCloud2(pcl_msg);
                 continue;
             }
 

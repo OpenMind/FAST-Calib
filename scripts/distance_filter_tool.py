@@ -189,11 +189,19 @@ def convert_livox_custom_bag_to_pcd(
 # ===================== 自动检测：这个 bag 用哪种方式 =====================
 
 
+def find_topic_of_type(topic_types, msg_type):
+    """返回 bag 中第一个匹配 msg_type 的 topic 名称（如有多个，打印提示并取第一个）"""
+    matches = [name for name, t in topic_types.items() if t == msg_type]
+    if len(matches) > 1:
+        print(f"[Detect] 检测到多个 {msg_type} topic: {matches}，默认使用 {matches[0]}。")
+    return matches[0] if matches else None
+
+
 def detect_lidar_msg_type(bag_path):
     """
-    读取 bag 的 topic 列表，检测是否有 PointCloud2 或 Livox CustomMsg。
+    读取 bag 的 topic 列表，检测是否有 PointCloud2 或 Livox CustomMsg，并返回其 topic 名称。
     返回：
-        "PointCloud2", "CustomMsg", 或 None
+        ("PointCloud2", topic_name), ("CustomMsg", topic_name), 或 (None, None)
     如果两种都有，默认优先 PointCloud2,并打印提示。
     """
     print(f"[Detect] 扫描 bag: {bag_path}")
@@ -205,16 +213,18 @@ def detect_lidar_msg_type(bag_path):
 
     if has_pc2 and has_livox:
         print("[Detect] 同时检测到 PointCloud2 和 Livox CustomMsg, 默认使用 PointCloud2。")
-        return "PointCloud2"
+        return "PointCloud2", find_topic_of_type(topic_types, "sensor_msgs/msg/PointCloud2")
     elif has_pc2:
-        print("[Detect] 检测到 PointCloud2 点云。")
-        return "PointCloud2"
+        topic_name = find_topic_of_type(topic_types, "sensor_msgs/msg/PointCloud2")
+        print(f"[Detect] 检测到 PointCloud2 点云，topic: {topic_name}")
+        return "PointCloud2", topic_name
     elif has_livox:
-        print("[Detect] 检测到 Livox CustomMsg 点云。")
-        return "CustomMsg"
+        topic_name = find_topic_of_type(topic_types, "livox_ros_driver2/msg/CustomMsg")
+        print(f"[Detect] 检测到 Livox CustomMsg 点云，topic: {topic_name}")
+        return "CustomMsg", topic_name
     else:
         print("[Detect] 未检测到 PointCloud2 或 Livox CustomMsg 点云。")
-        return None
+        return None, None
 
 # ===================== Open3D 交互选点 & 保存范围 =====================
 
@@ -323,8 +333,8 @@ if __name__ == "__main__":
 
     # 不需要 rclpy.init()，完全离线工具
 
-    # 3) 自动检测 bag 中点云类型
-    msg_type = detect_lidar_msg_type(bag_path)
+    # 3) 自动检测 bag 中点云类型及其 topic 名称
+    msg_type, topic_name = detect_lidar_msg_type(bag_path)
     if msg_type is None:
         print("[ERROR] 未检测到支持的雷达消息类型，退出。", file=sys.stderr)
         sys.exit(1)
@@ -334,14 +344,14 @@ if __name__ == "__main__":
         pcd_path = convert_pointcloud2_bag_to_pcd(
             bag_path=bag_path,
             output_dir=output_dir,
-            topic_name="/hesai/pandar",  # 如有不同，可改成 topic 名称
+            topic_name=topic_name,
             pcd_name="sensor_PointCloud2_inten_ascii.pcd"
         )
     else:  # "CustomMsg"
         pcd_path = convert_livox_custom_bag_to_pcd(
             bag_path=bag_path,
             output_dir=output_dir,
-            topic_name="/livox/lidar",  # 如有不同，可改成 topic 名称
+            topic_name=topic_name,
             pcd_name="livox_CustomMsg_inten_ascii.pcd"
         )
 

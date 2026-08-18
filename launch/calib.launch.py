@@ -37,6 +37,8 @@ def generate_launch_description():
                 "image_path": LaunchConfiguration("image_path"),
                 "output_path": LaunchConfiguration("output_path"),
                 "lidar_topic": LaunchConfiguration("lidar_topic"),
+                "live_capture_seconds": LaunchConfiguration("live_capture_seconds"),
+                "rtsp_warmup_frames": LaunchConfiguration("rtsp_warmup_frames"),
             },
         ],
     )
@@ -56,18 +58,16 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "bag_path",
-                default_value=os.path.join(
-                    package_path, "calib_data", "avia_multi_scene_33"
-                ),
-                description="Path to the ROS 2 bag directory (containing metadata.yaml) "
-                "with the recorded LiDAR topic",
+                default_value="",
+                description="Path to a ROS 2 bag directory (containing metadata.yaml) "
+                "with a recorded LiDAR topic. Leave empty (the default) to instead "
+                "subscribe to lidar_topic live for live_capture_seconds.",
             ),
             DeclareLaunchArgument(
                 "image_path",
-                default_value=os.path.join(
-                    package_path, "calib_data", "avia_multi_scene", "33.jpg"
-                ),
-                description="Path to the corresponding calibration image",
+                default_value="rtsp://10.21.31.103:8554/video1",
+                description="Path to a calibration image file, or an rtsp:// URL to "
+                "grab a live frame from instead.",
             ),
             DeclareLaunchArgument(
                 "output_path",
@@ -76,8 +76,21 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "lidar_topic",
-                default_value="/livox/lidar",
-                description="LiDAR topic recorded in the bag",
+                default_value="/lidar_points_front",
+                description="LiDAR topic to read (from the bag, or subscribed to live "
+                "when bag_path is empty)",
+            ),
+            DeclareLaunchArgument(
+                "live_capture_seconds",
+                default_value="3.0",
+                description="How long to accumulate points from lidar_topic when "
+                "capturing live (bag_path empty)",
+            ),
+            DeclareLaunchArgument(
+                "rtsp_warmup_frames",
+                default_value="15",
+                description="Frames to discard after opening the RTSP stream before "
+                "keeping one, so the decoder is past any stale buffered frames",
             ),
             fast_calib_node,
             rviz_node,
