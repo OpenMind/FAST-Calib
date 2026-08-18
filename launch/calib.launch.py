@@ -39,6 +39,8 @@ def generate_launch_description():
                 "lidar_topic": LaunchConfiguration("lidar_topic"),
                 "live_capture_seconds": LaunchConfiguration("live_capture_seconds"),
                 "rtsp_warmup_frames": LaunchConfiguration("rtsp_warmup_frames"),
+                "lidar_type": LaunchConfiguration("lidar_type"),
+                "lidar_frame": LaunchConfiguration("lidar_frame"),
             },
         ],
     )
@@ -85,6 +87,21 @@ def generate_launch_description():
                 default_value="3.0",
                 description="How long to accumulate points from lidar_topic when "
                 "capturing live (bag_path empty)",
+            ),
+            DeclareLaunchArgument(
+                "lidar_type",
+                default_value="grid",
+                description="Circle detector: 'grid' (occupancy-grid holes; works for "
+                "any scan pattern incl. MEMS/rosette scanners like this one), 'auto' "
+                "(ring field -> mech), 'solid' (normal-based boundaries), or 'mech' "
+                "(per-ring gap detection)",
+            ),
+            DeclareLaunchArgument(
+                "lidar_frame",
+                default_value="zfwd",
+                description="Axis convention of the lidar frame: 'zfwd' (camera-style: "
+                "z forward, x right, y up — matches /lidar_points_front) or 'xfwd' "
+                "(ROS standard: x forward, y left, z up)",
             ),
             DeclareLaunchArgument(
                 "rtsp_warmup_frames",

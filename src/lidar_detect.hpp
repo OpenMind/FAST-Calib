@@ -328,6 +328,218 @@ public:
         }
     }
 
+    // 栅格占据法：将拟合平面上的点栅格化成 2D 占据图，用形态学闭运算桥接扫描线间隙，
+    // 再把板内的圆形空洞当作靶孔。与扫描模式无关（机械式 / MEMS 玫瑰线均适用）。
+    void detect_grid_lidar(pcl::PointCloud<Common::Point>::Ptr cloud, pcl::PointCloud<pcl::PointXYZ>::Ptr center_cloud)
+    {
+        // 1. X、Y、Z方向滤波
+        filtered_cloud_->reserve(cloud->size());
+
+        pcl::PassThrough<Common::Point> pass_x;
+        pass_x.setInputCloud(cloud);
+        pass_x.setFilterFieldName("x");
+        pass_x.setFilterLimits(x_min_, x_max_);
+        pass_x.filter(*filtered_cloud_);
+
+        pcl::PassThrough<Common::Point> pass_y;
+        pass_y.setInputCloud(filtered_cloud_);
+        pass_y.setFilterFieldName("y");
+        pass_y.setFilterLimits(y_min_, y_max_);
+        pass_y.filter(*filtered_cloud_);
+
+        pcl::PassThrough<Common::Point> pass_z;
+        pass_z.setInputCloud(filtered_cloud_);
+        pass_z.setFilterFieldName("z");
+        pass_z.setFilterLimits(z_min_, z_max_);
+        pass_z.filter(*filtered_cloud_);
+
+        RCLCPP_INFO(logger_, "Depth filtered cloud size: %zu", filtered_cloud_->size());
+
+        // 2. 拟合平面
+        pcl::ModelCoefficients::Ptr plane_coefficients(new pcl::ModelCoefficients);
+        pcl::PointIndices::Ptr plane_inliers(new pcl::PointIndices);
+        pcl::SACSegmentation<Common::Point> plane_segmentation;
+        plane_segmentation.setModelType(pcl::SACMODEL_PLANE);
+        plane_segmentation.setMethodType(pcl::SAC_RANSAC);
+        plane_segmentation.setDistanceThreshold(0.02);
+        plane_segmentation.setInputCloud(filtered_cloud_);
+        plane_segmentation.segment(*plane_inliers, *plane_coefficients);
+
+        pcl::ExtractIndices<Common::Point> extract;
+        extract.setInputCloud(filtered_cloud_);
+        extract.setIndices(plane_inliers);
+        extract.filter(*plane_cloud_);
+        RCLCPP_INFO(logger_, "Plane cloud size: %zu", plane_cloud_->size());
+        if (plane_cloud_->size() < 100)
+        {
+            RCLCPP_WARN(logger_, "[LiDAR/grid] Too few plane points, abort.");
+            return;
+        }
+
+        // 3. 平面点对齐到 Z=0
+        Eigen::Vector3d normal(plane_coefficients->values[0],
+                               plane_coefficients->values[1],
+                               plane_coefficients->values[2]);
+        normal.normalize();
+        Eigen::Vector3d z_axis(0, 0, 1);
+        Eigen::Vector3d axis = normal.cross(z_axis);
+        double angle = acos(normal.dot(z_axis));
+        Eigen::AngleAxisd rotation(angle, axis);
+        Eigen::Matrix3d R_align = rotation.toRotationMatrix();
+
+        aligned_cloud_->reserve(plane_cloud_->size());
+        double average_z = 0.0;
+        for (const auto &pt : *plane_cloud_)
+        {
+            Eigen::Vector3d p = R_align * Eigen::Vector3d(pt.x, pt.y, pt.z);
+            aligned_cloud_->push_back(pcl::PointXYZ(p.x(), p.y(), 0.0));
+            average_z += p.z();
+        }
+        average_z /= aligned_cloud_->size();
+
+        // 4. 栅格化成占据图（1 cm 分辨率，四周留边让洞不贴图像边界）
+        const float res = 0.01f;
+        float gx_min = std::numeric_limits<float>::max(), gx_max = std::numeric_limits<float>::lowest();
+        float gy_min = gx_min, gy_max = gx_max;
+        for (const auto &pt : *aligned_cloud_)
+        {
+            gx_min = std::min(gx_min, pt.x); gx_max = std::max(gx_max, pt.x);
+            gy_min = std::min(gy_min, pt.y); gy_max = std::max(gy_max, pt.y);
+        }
+        const int pad = 4;
+        const int W = static_cast<int>((gx_max - gx_min) / res) + 1 + 2 * pad;
+        const int H = static_cast<int>((gy_max - gy_min) / res) + 1 + 2 * pad;
+        if (W < 10 || H < 10 || W > 4000 || H > 4000)
+        {
+            RCLCPP_WARN(logger_, "[LiDAR/grid] Degenerate grid %dx%d, abort.", W, H);
+            return;
+        }
+
+        cv::Mat occ = cv::Mat::zeros(H, W, CV_8UC1);
+        for (const auto &pt : *aligned_cloud_)
+        {
+            int ix = static_cast<int>((pt.x - gx_min) / res) + pad;
+            int iy = static_cast<int>((pt.y - gy_min) / res) + pad;
+            occ.at<uint8_t>(iy, ix) = 255;
+        }
+
+        // 5. 闭运算桥接相邻扫描线之间的空隙（7 cm 内视为连续板面）
+        cv::Mat closed;
+        cv::morphologyEx(occ, closed, cv::MORPH_CLOSE,
+                         cv::getStructuringElement(cv::MORPH_RECT, cv::Size(7, 7)));
+
+        // 6. 找板内部的空洞：从图像边界向内 flood fill 得到"外部"，
+        //    剩下的空像素即被板面包围的洞
+        cv::Mat empty = 255 - closed;
+        cv::Mat outside = empty.clone();
+        cv::floodFill(outside, cv::Point(0, 0), 128);
+        cv::Mat holes = (empty == 255) & (outside != 128);
+
+        cv::Mat labels, stats, centroids;
+        int n = cv::connectedComponentsWithStats(holes, labels, stats, centroids, 8, CV_32S);
+
+        // 7. 按面积/长宽比筛选圆洞，并用最小二乘在环带点上精修圆心
+        const double r_px = circle_radius_ / res;
+        const double area_lo = M_PI * (r_px - 5) * (r_px - 5);
+        const double area_hi = M_PI * (r_px + 5) * (r_px + 5);
+        center_z0_cloud_->reserve(4);
+        edge_cloud_->reserve(1024);
+
+        for (int i = 1; i < n; ++i)
+        {
+            double area = stats.at<int>(i, cv::CC_STAT_AREA);
+            double w = stats.at<int>(i, cv::CC_STAT_WIDTH), h = stats.at<int>(i, cv::CC_STAT_HEIGHT);
+            if (area < area_lo || area > area_hi) continue;
+            if (std::fabs(w - h) > 0.6 * r_px) continue;
+
+            double cx = (centroids.at<double>(i, 0) - pad) * res + gx_min;
+            double cy = (centroids.at<double>(i, 1) - pad) * res + gy_min;
+
+            // 收集圆环带内的平面点做最小二乘圆拟合
+            std::vector<Eigen::Vector2d> ring_pts;
+            for (const auto &pt : *aligned_cloud_)
+            {
+                double d = std::hypot(pt.x - cx, pt.y - cy);
+                if (d > circle_radius_ - 0.05 && d < circle_radius_ + 0.05)
+                    ring_pts.emplace_back(pt.x, pt.y);
+            }
+            if (ring_pts.size() >= 10)
+            {
+                Eigen::MatrixXd A(ring_pts.size(), 3);
+                Eigen::VectorXd b(ring_pts.size());
+                for (size_t k = 0; k < ring_pts.size(); ++k)
+                {
+                    A(k, 0) = 2 * ring_pts[k].x();
+                    A(k, 1) = 2 * ring_pts[k].y();
+                    A(k, 2) = 1.0;
+                    b(k) = ring_pts[k].squaredNorm();
+                }
+                Eigen::Vector3d sol = A.colPivHouseholderQr().solve(b);
+                double r_fit = std::sqrt(sol(2) + sol(0) * sol(0) + sol(1) * sol(1));
+                if (std::fabs(r_fit - circle_radius_) < 0.03)
+                {
+                    cx = sol(0);
+                    cy = sol(1);
+                }
+                for (const auto &rp : ring_pts)
+                    edge_cloud_->push_back(pcl::PointXYZ(rp.x(), rp.y(), 0.0));
+                RCLCPP_INFO(logger_, "[LiDAR/grid] Hole at (%.3f, %.3f), fitted r = %.3f (%zu rim pts)",
+                            cx, cy, r_fit, ring_pts.size());
+            }
+
+            pcl::PointXYZ center;
+            center.x = cx; center.y = cy; center.z = 0;
+            center_z0_cloud_->push_back(center);
+        }
+        RCLCPP_INFO(logger_, "[LiDAR/grid] %zu circular hole(s) detected.", center_z0_cloud_->size());
+
+        // 8. Geometric consistency check（与 mech 路径一致）
+        std::vector<std::vector<int>> groups;
+        comb(center_z0_cloud_->size(), TARGET_NUM_CIRCLES, groups);
+        std::vector<double> groups_scores(groups.size(), -1.0);
+        for (size_t i = 0; i < groups.size(); ++i)
+        {
+            std::vector<pcl::PointXYZ> candidates;
+            for (size_t j = 0; j < groups[i].size(); ++j)
+                candidates.push_back(center_z0_cloud_->at(groups[i][j]));
+            Square square_candidate(candidates, delta_width_circles_, delta_height_circles_);
+            groups_scores[i] = square_candidate.is_valid() ? 1.0 : -1;
+        }
+
+        int best_candidate_idx = -1;
+        double best_candidate_score = -1;
+        for (size_t i = 0; i < groups.size(); ++i)
+        {
+            if (best_candidate_score == 1 && groups_scores[i] == 1)
+            {
+                RCLCPP_ERROR(logger_,
+                    "[LiDAR/grid] More than one set of candidates fit target's geometry. "
+                    "Please, make sure your parameters are well set. Exiting callback");
+                return;
+            }
+            if (groups_scores[i] > best_candidate_score)
+            {
+                best_candidate_score = groups_scores[i];
+                best_candidate_idx = i;
+            }
+        }
+        if (best_candidate_idx == -1)
+        {
+            RCLCPP_WARN(logger_,
+                "[LiDAR/grid] Unable to find a candidate set that matches target's geometry");
+            return;
+        }
+
+        // 9. 将选中的圆心逆变换回原始坐标系
+        Eigen::Matrix3d R_inv = R_align.inverse();
+        for (size_t j = 0; j < groups[best_candidate_idx].size(); ++j)
+        {
+            const auto &c = center_z0_cloud_->at(groups[best_candidate_idx][j]);
+            Eigen::Vector3d original_point = R_inv * Eigen::Vector3d(c.x, c.y, average_z);
+            center_cloud->points.push_back(pcl::PointXYZ(original_point.x(), original_point.y(), original_point.z()));
+        }
+    }
+
     void detect_solid_lidar(pcl::PointCloud<Common::Point>::Ptr cloud, pcl::PointCloud<pcl::PointXYZ>::Ptr center_cloud)
     {
         // 1. X、Y、Z方向滤波

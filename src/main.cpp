@@ -40,7 +40,12 @@ int main(int argc, char **argv)
     PointCloud<PointXYZ>::Ptr lidar_center_cloud(new PointCloud<PointXYZ>);
     lidar_center_cloud->reserve(4);
 
-    switch (dataPreprocessPtr->lidar_type_)
+    LiDARType lidar_type = dataPreprocessPtr->lidar_type_;
+    if (params.lidar_type == "solid") lidar_type = LiDARType::Solid;
+    else if (params.lidar_type == "mech") lidar_type = LiDARType::Mech;
+    else if (params.lidar_type == "grid") lidar_type = LiDARType::Grid;
+
+    switch (lidar_type)
     {
         case LiDARType::Solid:
             lidarDetectPtr->detect_solid_lidar(cloud_input, lidar_center_cloud);
@@ -50,6 +55,10 @@ int main(int argc, char **argv)
             lidarDetectPtr->detect_mech_lidar(cloud_input, lidar_center_cloud);
             break;
 
+        case LiDARType::Grid:
+            lidarDetectPtr->detect_grid_lidar(cloud_input, lidar_center_cloud);
+            break;
+
         default:
             std::cerr << BOLDYELLOW
                     << "[Main] Unknown LiDAR type."
@@ -57,19 +66,70 @@ int main(int argc, char **argv)
             break;
     }
 
+    // 保存中间点云，便于检测失败时离线分析
+    {
+        std::string outDir = params.output_path;
+        if (!outDir.empty() && outDir.back() != '/') outDir += '/';
+        auto dump = [&outDir, &node](const std::string &name, const auto &cloudPtr) {
+            if (cloudPtr && !cloudPtr->empty())
+                pcl::io::savePCDFileBinary(outDir + name, *cloudPtr);
+        };
+        dump("dbg_filtered.pcd", lidarDetectPtr->getFilteredCloud());
+        dump("dbg_plane.pcd", lidarDetectPtr->getPlaneCloud());
+        dump("dbg_edge.pcd", lidarDetectPtr->getEdgeCloud());
+        dump("dbg_aligned_edge.pcd", lidarDetectPtr->getAlignedCloud());
+        dump("dbg_circle_centers.pcd", lidarDetectPtr->getCenterZ0Cloud());
+        RCLCPP_INFO(node->get_logger(), "Saved intermediate debug clouds (dbg_*.pcd) to %s", outDir.c_str());
+    }
+
     // 对 QR 和 LiDAR 检测到的圆心进行排序
     PointCloud<PointXYZ>::Ptr qr_centers(new PointCloud<PointXYZ>);
     PointCloud<PointXYZ>::Ptr lidar_centers(new PointCloud<PointXYZ>);
     sortPatternCenters(qr_center_cloud, qr_centers, "camera");
-    sortPatternCenters(lidar_center_cloud, lidar_centers, "lidar");
+    sortPatternCenters(lidar_center_cloud, lidar_centers, "lidar", params.lidar_frame);
 
-    // 保存中间结果：排序后的 LiDAR 圆心和 QR 圆心
-    saveTargetHoleCenters(lidar_centers, qr_centers, params);
-
-    // 计算外参
-    Eigen::Matrix4f transformation;
+    // 计算外参。雷达与相机之间可能存在 90°/180° 相对滚转（如侧装雷达），
+    // 角度排序无法保证两侧起始角点一致，因此穷举 4 个循环偏移 × 2 个方向
+    // 共 8 种对应关系，取 RMSE 最小者。
+    Eigen::Matrix4f transformation = Eigen::Matrix4f::Identity();
     pcl::registration::TransformationEstimationSVD<pcl::PointXYZ, pcl::PointXYZ> svd;
-    svd.estimateRigidTransformation(*lidar_centers, *qr_centers, transformation);
+    double best_rmse = -1.0;
+    if (lidar_centers->size() == 4 && qr_centers->size() == 4)
+    {
+        PointCloud<PointXYZ>::Ptr best_order(new PointCloud<PointXYZ>);
+        for (int rev = 0; rev < 2; ++rev)
+        {
+            for (int shift = 0; shift < 4; ++shift)
+            {
+                PointCloud<PointXYZ>::Ptr cand(new PointCloud<PointXYZ>);
+                for (int k = 0; k < 4; ++k)
+                {
+                    int idx = rev ? (shift + 4 - k) % 4 : (shift + k) % 4;
+                    cand->push_back(lidar_centers->points[idx]);
+                }
+                Eigen::Matrix4f T;
+                svd.estimateRigidTransformation(*cand, *qr_centers, T);
+
+                pcl::PointCloud<pcl::PointXYZ>::Ptr aligned(new pcl::PointCloud<pcl::PointXYZ>);
+                alignPointCloud(cand, aligned, T);
+                double rmse = computeRMSE(qr_centers, aligned);
+                if (rmse >= 0 && (best_rmse < 0 || rmse < best_rmse))
+                {
+                    best_rmse = rmse;
+                    transformation = T;
+                    *best_order = *cand;
+                }
+            }
+        }
+        if (!best_order->empty()) *lidar_centers = *best_order;
+    }
+    else
+    {
+        svd.estimateRigidTransformation(*lidar_centers, *qr_centers, transformation);
+    }
+
+    // 保存中间结果：已按最优对应关系排列的 LiDAR 圆心和 QR 圆心
+    saveTargetHoleCenters(lidar_centers, qr_centers, params);
 
     // 将 LiDAR 点云转换到 QR 码坐标系
     pcl::PointCloud<pcl::PointXYZ>::Ptr aligned_lidar_centers(new pcl::PointCloud<pcl::PointXYZ>);

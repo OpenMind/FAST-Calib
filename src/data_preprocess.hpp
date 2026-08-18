@@ -32,7 +32,8 @@ using namespace std;
 enum class LiDARType : int {
     Unknown = 0,
     Solid   = 1,   // 固态（如 Livox）
-    Mech    = 2    // 机械式多线
+    Mech    = 2,   // 机械式多线
+    Grid    = 3    // 栅格占据法（与扫描模式无关，适合玫瑰线/MEMS 雷达）
 };
 
 class DataPreprocess
@@ -51,6 +52,15 @@ public:
         if (params.image_path.rfind("rtsp://", 0) == 0)
         {
             captureImageFromRtsp(params.image_path, params.rtsp_warmup_frames);
+            if (!img_input_.empty())
+            {
+                std::string out = params.output_path;
+                if (!out.empty() && out.back() != '/') out += '/';
+                const std::string frame_path = out + "rtsp_frame.jpg";
+                if (cv::imwrite(frame_path, img_input_))
+                    RCLCPP_INFO(rclcpp::get_logger("fast_calib"),
+                                "Saved the captured RTSP frame to %s for inspection.", frame_path.c_str());
+            }
         }
         else
         {
@@ -76,6 +86,10 @@ public:
 private:
     void captureImageFromRtsp(const std::string &url, int warmup_frames)
     {
+        // TCP transport avoids the RTP-over-UDP packet loss that leaves the HEVC
+        // decoder without reference frames and produces flat gray output.
+        setenv("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp", 0);
+
         RCLCPP_INFO(rclcpp::get_logger("fast_calib"), "Connecting to RTSP camera stream %s ...", url.c_str());
         cv::VideoCapture cap(url, cv::CAP_FFMPEG);
         if (!cap.isOpened())
@@ -87,6 +101,25 @@ private:
         cv::Mat frame;
         // Drain buffered/stale frames so the one we keep reflects the current scene.
         for (int i = 0; i < warmup_frames; ++i) cap.read(frame);
+
+        // A frame decoded without its keyframe comes out as near-uniform gray;
+        // keep reading (up to ~200 more frames) until one has real texture.
+        const double kMinStdDev = 8.0;
+        for (int i = 0; i < 200; ++i)
+        {
+            if (!frame.empty())
+            {
+                cv::Mat gray;
+                cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
+                cv::Scalar mean, stddev;
+                cv::meanStdDev(gray, mean, stddev);
+                if (stddev[0] > kMinStdDev) break;
+                if (i == 0)
+                    RCLCPP_WARN(rclcpp::get_logger("fast_calib"),
+                                "Frame looks corrupted (flat gray, stddev %.1f) — waiting for a keyframe ...", stddev[0]);
+            }
+            if (!cap.read(frame)) break;
+        }
 
         if (frame.empty())
         {

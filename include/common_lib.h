@@ -67,6 +67,8 @@ struct Params {
   string output_path;
   double live_capture_seconds;
   int rtsp_warmup_frames;
+  string lidar_type; // "auto" | "solid" | "mech" | "grid"
+  string lidar_frame; // "xfwd" (ROS: x fwd, y left, z up) | "zfwd" (camera-style: z fwd, x right, y up)
 };
 
 // 读取参数
@@ -95,6 +97,14 @@ Params loadParameters(rclcpp::Node *node) {
   // and/or image_path is an rtsp:// URL (grab a frame instead of reading a file).
   params.live_capture_seconds = ros_params::value(node, "live_capture_seconds", 3.0);
   params.rtsp_warmup_frames = ros_params::value(node, "rtsp_warmup_frames", 15);
+  // "auto": pick from the point cloud (ring field -> mech). "solid"/"mech": force that
+  // detector — e.g. rosette-scanning MEMS lidars carry a ring field but their hole rims
+  // are sampled far better by the solid (normal-based boundary) detector.
+  params.lidar_type = ros_params::value<string>(node, "lidar_type", string("auto"));
+  // Axis convention of the lidar frame; correspondence sorting must know which
+  // axes span the board plane. "xfwd" is the ROS standard; "zfwd" fits lidars
+  // that publish camera-style axes (z forward, x right/lateral, y up).
+  params.lidar_frame = ros_params::value<string>(node, "lidar_frame", string("xfwd"));
   params.x_min = ros_params::value(node, "x_min", 1.5);
   params.x_max = ros_params::value(node, "x_max", 3.0);
   params.y_min = ros_params::value(node, "y_min", -1.5);
@@ -325,7 +335,8 @@ void saveCalibrationResults(const Params& params, const Eigen::Matrix4f& transfo
 
 void sortPatternCenters(pcl::PointCloud<pcl::PointXYZ>::Ptr pc,
                         pcl::PointCloud<pcl::PointXYZ>::Ptr v,
-                        const std::string& axis_mode = "camera") 
+                        const std::string& axis_mode = "camera",
+                        const std::string& lidar_frame = "xfwd")
 {
   if (pc->size() != 4) {
     std::cerr << BOLDRED << "[sortPatternCenters] Number of " << axis_mode << " center points to be sorted is not 4." << RESET << std::endl;
@@ -338,9 +349,15 @@ void sortPatternCenters(pcl::PointCloud<pcl::PointXYZ>::Ptr pc,
   if (axis_mode == "lidar") {
     for (const auto& p : *pc) {
       pcl::PointXYZ pt;
-      pt.x = -p.y;   // LiDAR Y -> Cam -X
-      pt.y = -p.z;   // LiDAR Z -> Cam -Y
-      pt.z = p.x;    // LiDAR X -> Cam Z
+      if (lidar_frame == "zfwd") {
+        pt.x = p.x;    // LiDAR X (right) -> Cam X
+        pt.y = -p.y;   // LiDAR Y (up)    -> Cam -Y
+        pt.z = p.z;    // LiDAR Z (fwd)   -> Cam Z
+      } else {
+        pt.x = -p.y;   // LiDAR Y -> Cam -X
+        pt.y = -p.z;   // LiDAR Z -> Cam -Y
+        pt.z = p.x;    // LiDAR X -> Cam Z
+      }
       work_pc->push_back(pt);
     }
   } else {
@@ -383,12 +400,16 @@ void sortPatternCenters(pcl::PointCloud<pcl::PointXYZ>::Ptr pc,
   // 6. If the original input was in the lidar frame, transform the sorted points back
   if (axis_mode == "lidar") {
     for (auto& point : v->points) {
-      float x_new = point.z;    // Cam Z -> LiDAR X
-      float y_new = -point.x;   // Cam -X -> LiDAR Y
-      float z_new = -point.y;   // Cam -Y -> LiDAR Z
-      point.x = x_new;
-      point.y = y_new;
-      point.z = z_new;
+      if (lidar_frame == "zfwd") {
+        point.y = -point.y;     // Cam -Y -> LiDAR Y (x and z map identically)
+      } else {
+        float x_new = point.z;  // Cam Z -> LiDAR X
+        float y_new = -point.x; // Cam -X -> LiDAR Y
+        float z_new = -point.y; // Cam -Y -> LiDAR Z
+        point.x = x_new;
+        point.y = y_new;
+        point.z = z_new;
+      }
     }
   }
 }
