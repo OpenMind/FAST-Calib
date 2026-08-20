@@ -67,9 +67,10 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "image_path",
-                default_value="rtsp://10.21.31.103:8554/video1",
-                description="Path to a calibration image file, or an rtsp:// URL to "
-                "grab a live frame from instead.",
+                default_value="/camera/front/image_raw",
+                description="ROS image topic to grab a live frame from (leading '/', "
+                "e.g. /camera/front/image_raw), a path to a calibration image file, "
+                "or an rtsp:// URL.",
             ),
             DeclareLaunchArgument(
                 "output_path",

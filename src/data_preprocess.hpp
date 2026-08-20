@@ -19,6 +19,7 @@ which is included as part of this source code package.
 #include <rosbag2_cpp/readers/sequential_reader.hpp>
 #include <rosbag2_storage/storage_filter.hpp>
 #include <rosbag2_storage/storage_options.hpp>
+#include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #ifdef FAST_CALIB_LIVOX_ENABLED
@@ -48,19 +49,18 @@ public:
     DataPreprocess(const rclcpp::Node::SharedPtr &node, Params &params)
         : cloud_input_(new pcl::PointCloud<Common::Point>)
     {
-        // 图像：rtsp:// 地址走实时抓帧，否则按文件读取
+        // 图像：rtsp:// 地址走实时抓帧；以 '/' 开头且磁盘上不存在的路径当作
+        // ROS 图像 topic 实时订阅一帧；否则按文件读取
         if (params.image_path.rfind("rtsp://", 0) == 0)
         {
             captureImageFromRtsp(params.image_path, params.rtsp_warmup_frames);
-            if (!img_input_.empty())
-            {
-                std::string out = params.output_path;
-                if (!out.empty() && out.back() != '/') out += '/';
-                const std::string frame_path = out + "rtsp_frame.jpg";
-                if (cv::imwrite(frame_path, img_input_))
-                    RCLCPP_INFO(rclcpp::get_logger("fast_calib"),
-                                "Saved the captured RTSP frame to %s for inspection.", frame_path.c_str());
-            }
+            saveFrameForInspection(params.output_path, "rtsp_frame.jpg");
+        }
+        else if (!params.image_path.empty() && params.image_path[0] == '/' &&
+                 !std::ifstream(params.image_path).good())
+        {
+            captureImageFromTopic(node, params.image_path);
+            saveFrameForInspection(params.output_path, "topic_frame.png");
         }
         else
         {
@@ -84,6 +84,75 @@ public:
     }
 
 private:
+    void saveFrameForInspection(const std::string &output_path, const std::string &filename)
+    {
+        if (img_input_.empty()) return;
+        std::string out = output_path;
+        if (!out.empty() && out.back() != '/') out += '/';
+        const std::string frame_path = out + filename;
+        if (cv::imwrite(frame_path, img_input_))
+            RCLCPP_INFO(rclcpp::get_logger("fast_calib"),
+                        "Saved the captured frame to %s for inspection.", frame_path.c_str());
+    }
+
+    // 把 ROS Image 消息转成 BGR 的 cv::Mat（只处理本项目会遇到的编码，避免引入 cv_bridge 依赖）
+    static cv::Mat imageMsgToBgr(const sensor_msgs::msg::Image &msg)
+    {
+        const int h = static_cast<int>(msg.height);
+        const int w = static_cast<int>(msg.width);
+        cv::Mat bgr;
+        if (msg.encoding == "bgr8" || msg.encoding == "rgb8")
+        {
+            const cv::Mat wrap(h, w, CV_8UC3, const_cast<uint8_t *>(msg.data.data()), msg.step);
+            if (msg.encoding == "rgb8")
+                cv::cvtColor(wrap, bgr, cv::COLOR_RGB2BGR);
+            else
+                bgr = wrap.clone();
+        }
+        else if (msg.encoding == "mono8")
+        {
+            const cv::Mat wrap(h, w, CV_8UC1, const_cast<uint8_t *>(msg.data.data()), msg.step);
+            cv::cvtColor(wrap, bgr, cv::COLOR_GRAY2BGR);
+        }
+        else
+        {
+            RCLCPP_ERROR(rclcpp::get_logger("fast_calib"),
+                         "Unsupported image encoding '%s' (expected rgb8/bgr8/mono8).", msg.encoding.c_str());
+        }
+        return bgr;
+    }
+
+    void captureImageFromTopic(const rclcpp::Node::SharedPtr &node, const std::string &topic,
+                               double timeout_sec = 10.0)
+    {
+        RCLCPP_INFO(rclcpp::get_logger("fast_calib"),
+                    "Waiting for one image on ROS topic %s (sensor-data QoS) ...", topic.c_str());
+
+        auto sub = node->create_subscription<sensor_msgs::msg::Image>(
+            topic, rclcpp::SensorDataQoS(),
+            [this](const sensor_msgs::msg::Image::SharedPtr msg)
+            {
+                if (!img_input_.empty()) return;
+                img_input_ = imageMsgToBgr(*msg);
+            });
+
+        const rclcpp::Time start = node->now();
+        rclcpp::Rate rate(50);
+        while (rclcpp::ok() && img_input_.empty() && (node->now() - start).seconds() < timeout_sec)
+        {
+            rclcpp::spin_some(node);
+            rate.sleep();
+        }
+
+        if (img_input_.empty())
+            RCLCPP_ERROR(rclcpp::get_logger("fast_calib"),
+                         "No image received on %s within %.1f s (if you meant an image file, check that the path exists).",
+                         topic.c_str(), timeout_sec);
+        else
+            RCLCPP_INFO(rclcpp::get_logger("fast_calib"), "Captured a %dx%d frame from %s.",
+                        img_input_.cols, img_input_.rows, topic.c_str());
+    }
+
     void captureImageFromRtsp(const std::string &url, int warmup_frames)
     {
         // TCP transport avoids the RTP-over-UDP packet loss that leaves the HEVC

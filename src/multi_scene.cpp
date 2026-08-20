@@ -1,6 +1,7 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <Eigen/Dense>
+#include <limits>
 #include <fstream>
 #include <sstream>
 #include <regex>
@@ -190,8 +191,46 @@ int main(int argc, char** argv)
         std::cout << "C[" << i << "]: (" << C[i](0) << ", " << C[i](1) << ", " << C[i](2) << ")" << std::endl;
     }
 
-    // 一次性求解
-    auto res = SolveRigidTransformWeighted(L, C, nullptr);
+    // 记录文件中 lidar_centers 与 qr_centers 的顺序不保证一致（单场景求解时
+    // 通过穷举 8 种对应顺序找到的最优排序没有写入文件），因此这里对每个 block
+    // 穷举 4 个循环移位 × 正反两个方向，3 个 block 共 8^3 = 512 种组合，
+    // 取联合 RMSE 最小的一组。
+    auto reorderQuad = [](const std::vector<Eigen::Vector3d>& q, int order) {
+        std::vector<Eigen::Vector3d> out(4);
+        const int shift = order & 3;
+        const bool rev = order >= 4;
+        for (int i = 0; i < 4; ++i)
+            out[i] = q[rev ? (shift - i + 8) % 4 : (shift + i) % 4];
+        return out;
+    };
+
+    RigidResult res;
+    double best_rms = std::numeric_limits<double>::max();
+    const size_t base = blocks.size() - 3;
+    for (int o0 = 0; o0 < 8; ++o0)
+    for (int o1 = 0; o1 < 8; ++o1)
+    for (int o2 = 0; o2 < 8; ++o2)
+    {
+        const int orders[3] = {o0, o1, o2};
+        std::vector<Eigen::Vector3d> Lt, Ct;
+        for (int k = 0; k < 3; ++k)
+        {
+            auto lq = reorderQuad(blocks[base + k].lidar_pts, orders[k]);
+            for (int i = 0; i < 4; ++i)
+            {
+                Lt.push_back(lq[i]);
+                Ct.push_back(blocks[base + k].qr_pts[i]);
+            }
+        }
+        auto r = SolveRigidTransformWeighted(Lt, Ct, nullptr);
+        if (r.ok && r.rms < best_rms)
+        {
+            best_rms = r.rms;
+            res = r;
+            L = Lt;
+            C = Ct;
+        }
+    }
     if (!res.ok) {
         RCLCPP_ERROR(node->get_logger(), "SolveRigidTransformWeighted failed.");
         return 1;

@@ -170,6 +170,10 @@ public:
         Eigen::Vector3d z_axis(0, 0, 1);
         Eigen::Vector3d axis = normal.cross(z_axis);
         double angle = acos(normal.dot(z_axis));
+        // AngleAxisd requires a unit axis; normal.cross(z) has length
+        // sin(angle), which silently skews the alignment for tilted boards.
+        if (axis.norm() > 1e-9) axis.normalize();
+        else axis = Eigen::Vector3d::UnitX();
 
         Eigen::AngleAxisd rotation(angle, axis);
         Eigen::Matrix3d R_align = rotation.toRotationMatrix();
@@ -384,6 +388,10 @@ public:
         Eigen::Vector3d z_axis(0, 0, 1);
         Eigen::Vector3d axis = normal.cross(z_axis);
         double angle = acos(normal.dot(z_axis));
+        // AngleAxisd requires a unit axis; normal.cross(z) has length
+        // sin(angle), which silently skews the alignment for tilted boards.
+        if (axis.norm() > 1e-9) axis.normalize();
+        else axis = Eigen::Vector3d::UnitX();
         Eigen::AngleAxisd rotation(angle, axis);
         Eigen::Matrix3d R_align = rotation.toRotationMatrix();
 
@@ -600,6 +608,10 @@ public:
 
         Eigen::Vector3d axis = normal.cross(z_axis);
         double angle = acos(normal.dot(z_axis));
+        // AngleAxisd requires a unit axis; normal.cross(z) has length
+        // sin(angle), which silently skews the alignment for tilted boards.
+        if (axis.norm() > 1e-9) axis.normalize();
+        else axis = Eigen::Vector3d::UnitX();
 
         Eigen::AngleAxisd rotation(angle, axis);
         Eigen::Matrix3d R = rotation.toRotationMatrix();
