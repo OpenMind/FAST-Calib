@@ -58,6 +58,12 @@ POINT_CLOUD_REGISTER_POINT_STRUCT(Common::Point,
 struct Params {
   double x_min, x_max, y_min, y_max, z_min, z_max;
   double fx, fy, cx, cy, k1, k2, p1, p2;
+  // Raw-sensor fisheye (equidistant) intrinsics. When fisheye_enable is set, every
+  // captured frame is undistorted from this model to the fx/fy/cx/cy pinhole above
+  // (zero distortion) before QR detection -- see undistortFisheyeImage().
+  bool fisheye_enable;
+  double fisheye_fx, fisheye_fy, fisheye_cx, fisheye_cy;
+  double fisheye_k1, fisheye_k2, fisheye_k3, fisheye_k4;
   double marker_size, delta_width_qr_center, delta_height_qr_center;
   double delta_width_circles, delta_height_circles, circle_radius;
   int min_detected_markers;
@@ -82,6 +88,15 @@ Params loadParameters(rclcpp::Node *node) {
   params.k2 = ros_params::value(node, "k2", 0.10996870793601);
   params.p1 = ros_params::value(node, "p1", 0.000157303079833973);
   params.p2 = ros_params::value(node, "p2", 0.000544930726278493);
+  params.fisheye_enable = ros_params::value(node, "fisheye_enable", false);
+  params.fisheye_fx = ros_params::value(node, "fisheye_fx", 0.0);
+  params.fisheye_fy = ros_params::value(node, "fisheye_fy", 0.0);
+  params.fisheye_cx = ros_params::value(node, "fisheye_cx", 0.0);
+  params.fisheye_cy = ros_params::value(node, "fisheye_cy", 0.0);
+  params.fisheye_k1 = ros_params::value(node, "fisheye_k1", 0.0);
+  params.fisheye_k2 = ros_params::value(node, "fisheye_k2", 0.0);
+  params.fisheye_k3 = ros_params::value(node, "fisheye_k3", 0.0);
+  params.fisheye_k4 = ros_params::value(node, "fisheye_k4", 0.0);
   params.marker_size = ros_params::value(node, "marker_size", 0.2);
   params.delta_width_qr_center = ros_params::value(node, "delta_width_qr_center", 0.55);
   params.delta_height_qr_center = ros_params::value(node, "delta_height_qr_center", 0.35);
@@ -112,6 +127,28 @@ Params loadParameters(rclcpp::Node *node) {
   params.z_min = ros_params::value(node, "z_min", -0.5);
   params.z_max = ros_params::value(node, "z_max", 2.0);
   return params;
+}
+
+// In-place fisheye (equidistant) -> virtual-pinhole undistortion, applied once
+// right after image capture so QR detection always sees a rectilinear frame
+// regardless of image_path source (file/topic/rtsp). No-op unless fisheye_enable
+// is set, so plumb-bob camera setups sharing this yaml are unaffected.
+void undistortFisheyeImage(cv::Mat &image, const Params &params)
+{
+  if (!params.fisheye_enable || image.empty()) return;
+
+  cv::Mat K_src = (cv::Mat_<double>(3, 3) << params.fisheye_fx, 0, params.fisheye_cx,
+                                              0, params.fisheye_fy, params.fisheye_cy,
+                                              0, 0, 1);
+  cv::Mat D_src = (cv::Mat_<double>(4, 1) << params.fisheye_k1, params.fisheye_k2,
+                                              params.fisheye_k3, params.fisheye_k4);
+  cv::Mat K_dst = (cv::Mat_<double>(3, 3) << params.fx, 0, params.cx,
+                                              0, params.fy, params.cy,
+                                              0, 0, 1);
+
+  cv::Mat undistorted;
+  cv::fisheye::undistortImage(image, undistorted, K_src, D_src, K_dst, image.size());
+  image = undistorted;
 }
 
 double computeRMSE(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud1, 

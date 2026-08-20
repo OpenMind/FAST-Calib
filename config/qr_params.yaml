@@ -53,14 +53,28 @@
       # p1: -0.006811
       # p2: 0.001601
 
-      # Virtual pinhole for PRE-UNDISTORTED frames (calibrated 2026-08-19:
-      # the M20 front camera is a fisheye, equidistant model fx=460.974
-      # fy=462.269 cx=615.377 cy=363.239 k1..k4=[0.017302, 0.041285,
-      # -0.056071, 0.016684], RMS 1.28 px, 30 ArUco-board views).
-      # Feed calib.launch.py an image undistorted to THIS pinhole
-      # (fx=fy=460, cx=639.5, cy=359.5, zero distortion); the extrinsic it
-      # produces is valid for the raw fisheye stream as well (same optical
-      # center and axes).
+      # Fisheye source (M20 front camera, equidistant model, calibrated
+      # 2026-08-19 with the FAST-Calib ArUco board: 30 views, RMS 1.28 px).
+      # fisheye_enable: true makes DataPreprocess's captured frame -- file,
+      # ROS topic, or RTSP, doesn't matter which -- get auto-undistorted to
+      # the virtual pinhole below before QR detection (see
+      # undistortFisheyeImage() in common_lib.h). Set to false (or delete
+      # this block) for a plumb-bob camera that doesn't need this step.
+      fisheye_enable: true
+      fisheye_fx: 460.97439
+      fisheye_fy: 462.26862
+      fisheye_cx: 615.37719
+      fisheye_cy: 363.23914
+      fisheye_k1: 0.01730228
+      fisheye_k2: 0.04128474
+      fisheye_k3: -0.05607144
+      fisheye_k4: 0.01668350
+
+      # Virtual pinhole target for the undistorted frame above. Zero
+      # distortion because undistortFisheyeImage() already removed it
+      # upstream; this extrinsic is valid for the raw fisheye stream as well
+      # (undistortion only changes the pixel<->ray mapping, not the optical
+      # center or axes).
       fx: 460.0
       fy: 460.0
       cx: 639.5

@@ -48,6 +48,12 @@ inline void get(rclcpp::Node *node, const std::string &name, std::string &value,
   value = (p.get_type() == rclcpp::ParameterType::PARAMETER_STRING) ? p.as_string() : default_value;
 }
 
+inline void get(rclcpp::Node *node, const std::string &name, bool &value, bool default_value)
+{
+  const rclcpp::Parameter p = declareDynamic(node, name, rclcpp::ParameterValue(default_value));
+  value = (p.get_type() == rclcpp::ParameterType::PARAMETER_BOOL) ? p.as_bool() : default_value;
+}
+
 /// Convenience wrapper returning the value instead of writing it out.
 template <typename T> T value(rclcpp::Node *node, const std::string &name, const T &default_value)
 {

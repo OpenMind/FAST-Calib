@@ -29,6 +29,7 @@ int main(int argc, char **argv)
 
     // 读取图像和点云
     cv::Mat img_input = dataPreprocessPtr->img_input_;
+    undistortFisheyeImage(img_input, params);  // no-op unless fisheye_enable is set
     pcl::PointCloud<Common::Point>::Ptr cloud_input = dataPreprocessPtr->cloud_input_;
 
     // 检测 QR 码
