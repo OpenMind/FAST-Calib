@@ -114,6 +114,11 @@ int main(int argc, char **argv)
                 pcl::PointCloud<pcl::PointXYZ>::Ptr aligned(new pcl::PointCloud<pcl::PointXYZ>);
                 alignPointCloud(cand, aligned, T);
                 double rmse = computeRMSE(qr_centers, aligned);
+                // The 0.5x0.4 hole rectangle is 180-deg symmetric, so a flipped
+                // correspondence ties on RMSE while mirroring the sensor through
+                // the board (|t| ~ 2x board distance). Sensors on one robot sit
+                // within ~1.5 m of each other; reject implausible candidates.
+                if (T.block<3,1>(0,3).norm() > 1.5f) continue;
                 if (rmse >= 0 && (best_rmse < 0 || rmse < best_rmse))
                 {
                     best_rmse = rmse;

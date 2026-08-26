@@ -19,6 +19,7 @@ class LidarDetect
 {
 private:
     double x_min_, x_max_, y_min_, y_max_, z_min_, z_max_;
+    double plane_dist_threshold_;
     double circle_radius_, delta_width_circles_, delta_height_circles_;
     rclcpp::Logger logger_;
 
@@ -45,6 +46,7 @@ public:
           edge_cloud_(new pcl::PointCloud<pcl::PointXYZ>),
           center_z0_cloud_(new pcl::PointCloud<pcl::PointXYZ>)
     {
+        plane_dist_threshold_ = params.plane_dist_threshold;
         x_min_ = params.x_min;
         x_max_ = params.x_max;
         y_min_ = params.y_min;
@@ -365,7 +367,7 @@ public:
         pcl::SACSegmentation<Common::Point> plane_segmentation;
         plane_segmentation.setModelType(pcl::SACMODEL_PLANE);
         plane_segmentation.setMethodType(pcl::SAC_RANSAC);
-        plane_segmentation.setDistanceThreshold(0.02);
+        plane_segmentation.setDistanceThreshold(plane_dist_threshold_);
         plane_segmentation.setInputCloud(filtered_cloud_);
         plane_segmentation.segment(*plane_inliers, *plane_coefficients);
 

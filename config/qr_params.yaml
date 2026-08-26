@@ -60,15 +60,25 @@
       # the virtual pinhole below before QR detection (see
       # undistortFisheyeImage() in common_lib.h). Set to false (or delete
       # this block) for a plumb-bob camera that doesn't need this step.
+      #　fisheye_enable: true
+      # fisheye_fx: 460.97439
+      # fisheye_fy: 462.26862
+      # fisheye_cx: 615.37719
+      # fisheye_cy: 363.23914
+      # fisheye_k1: 0.01730228
+      # fisheye_k2: 0.04128474
+      # fisheye_k3: -0.05607144
+      # fisheye_k4: 0.01668350
+
       fisheye_enable: true
-      fisheye_fx: 460.97439
-      fisheye_fy: 462.26862
-      fisheye_cx: 615.37719
-      fisheye_cy: 363.23914
-      fisheye_k1: 0.01730228
-      fisheye_k2: 0.04128474
-      fisheye_k3: -0.05607144
-      fisheye_k4: 0.01668350
+      fisheye_fx: 425.37407
+      fisheye_fy: 427.03157
+      fisheye_cx: 655.98842
+      fisheye_cy: 328.50014
+      fisheye_k1: 0.10007658
+      fisheye_k2: -0.07603503
+      fisheye_k3: 0.03403911
+      fisheye_k4: -0.00712949      
 
       # Virtual pinhole target for the undistorted frame above. Zero
       # distortion because undistortFisheyeImage() already removed it

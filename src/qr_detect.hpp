@@ -9,7 +9,7 @@ which is included as part of this source code package.
 #define QR_DETECT_HPP
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
-#include <opencv2/aruco.hpp>
+#include "aruco_compat.h"
 #include "common_lib.h"
 
 class QRDetect
@@ -18,7 +18,7 @@ class QRDetect
     double marker_size_, delta_width_qr_center_, delta_height_qr_center_;
     double delta_width_circles_, delta_height_circles_;
     int min_detected_markers_;
-    cv::Ptr<cv::aruco::Dictionary> dictionary_;
+    fc_aruco::Dictionary dictionary_;
     rclcpp::Logger logger_;
 
   public:
@@ -46,7 +46,7 @@ class QRDetect
       distCoeffs_ = (cv::Mat_<float>(1, 5) << params.k1, params.k2, params.p1, params.p2, 0);
 
       // Initialize QR dictionary
-      dictionary_ = cv::aruco::getPredefinedDictionary(cv::aruco::DICT_6X6_250);
+      dictionary_ = fc_aruco::getPredefinedDictionary(cv::aruco::DICT_6X6_250);
 
       qr_pub_ = node->create_publisher<sensor_msgs::msg::PointCloud2>("qr_cloud", 1);
     }
@@ -144,27 +144,20 @@ class QRDetect
       }
 
       std::vector<int> boardIds{1, 2, 4, 3};  // IDs order as explained above
-      cv::Ptr<cv::aruco::Board> board =
-          cv::aruco::Board::create(boardCorners, dictionary_, boardIds);
+      fc_aruco::Board board = fc_aruco::makeBoard(boardCorners, dictionary_, boardIds);
 
-      cv::Ptr<cv::aruco::DetectorParameters> parameters =
-          cv::aruco::DetectorParameters::create();
+      fc_aruco::DetectorParameters parameters = fc_aruco::makeDetectorParameters();
       // set tp use corner refinement for accuracy, values obtained
       // for pixel coordinates are more accurate than the neaterst pixel
-
-    #if (CV_MAJOR_VERSION == 3 && CV_MINOR_VERSION <= 2) || CV_MAJOR_VERSION < 3
-      parameters->doCornerRefinement = true;
-    #else
-      parameters->cornerRefinementMethod = cv::aruco::CORNER_REFINE_SUBPIX;
-    #endif
+      fc_aruco::setCornerRefineSubpix(parameters);
 
       // Detect markers
       std::vector<int> ids;
       std::vector<std::vector<cv::Point2f>> corners;
-      cv::aruco::detectMarkers(image, dictionary_, corners, ids, parameters);
+      fc_aruco::detectMarkers(image, dictionary_, corners, ids, parameters);
 
       // Draw detections if at least one marker detected
-      if (ids.size() > 0) cv::aruco::drawDetectedMarkers(imageCopy_, corners, ids);
+      if (ids.size() > 0) fc_aruco::drawDetectedMarkers(imageCopy_, corners, ids);
 
       cv::Vec3d rvec(0, 0, 0), tvec(0, 0, 0);  // Vectors to store initial guess
       
@@ -177,7 +170,7 @@ class QRDetect
         // Estimate 3D position of the markers
         vector<Vec3d> rvecs, tvecs;
         Vec3f rvec_sin, rvec_cos;
-        cv::aruco::estimatePoseSingleMarkers(corners, marker_size_, cameraMatrix_,
+        fc_aruco::estimatePoseSingleMarkers(corners, marker_size_, cameraMatrix_,
                                             distCoeffs_, rvecs, tvecs);
 
         // Draw markers' axis and centers in color image (Debug purposes)
@@ -186,8 +179,8 @@ class QRDetect
           double y = tvecs[i][1];
           double z = tvecs[i][2];
 
-          cv::aruco::drawAxis(imageCopy_, cameraMatrix_, distCoeffs_, rvecs[i],
-                              tvecs[i], 0.1);
+          fc_aruco::drawAxis(imageCopy_, cameraMatrix_, distCoeffs_, rvecs[i],
+                             tvecs[i], 0.1);
 
           // Accumulate pose for initial guess
           tvec[0] += tvecs[i][0];
@@ -214,19 +207,14 @@ class QRDetect
         // pcl::PointCloud<pcl::PointXYZ>::Ptr centers_cloud(new pcl::PointCloud<pcl::PointXYZ>);
         pcl::PointCloud<pcl::PointXYZ>::Ptr candidates_cloud(new pcl::PointCloud<pcl::PointXYZ>);
 
-    // Estimate 3D position of the board using detected markers
-    #if (CV_MAJOR_VERSION == 3 && CV_MINOR_VERSION <= 2) || CV_MAJOR_VERSION < 3
-        int valid = cv::aruco::estimatePoseBoard(corners, ids, board, cameraMatrix_,
-                                                distCoeffs_, rvec, tvec);
-    #else
-        int valid = cv::aruco::estimatePoseBoard(corners, ids, board, cameraMatrix_,
+        // Estimate 3D position of the board using detected markers
+        int valid = fc_aruco::estimatePoseBoard(corners, ids, board, cameraMatrix_,
                                                 distCoeffs_, rvec, tvec, true);
-    #endif
 
 
         // cout << "board: " <<  tvec[0] << ", "<< tvec[1] << ", " << tvec[2] << std::endl;
 
-        cv::aruco::drawAxis(imageCopy_, cameraMatrix_, distCoeffs_, rvec, tvec, 0.2);
+        fc_aruco::drawAxis(imageCopy_, cameraMatrix_, distCoeffs_, rvec, tvec, 0.2);
 
         // Build transformation matrix to calibration target axis
         cv::Mat R(3, 3, cv::DataType<float>::type);

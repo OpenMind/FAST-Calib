@@ -57,6 +57,7 @@ POINT_CLOUD_REGISTER_POINT_STRUCT(Common::Point,
 // 参数结构体
 struct Params {
   double x_min, x_max, y_min, y_max, z_min, z_max;
+  double plane_dist_threshold;
   double fx, fy, cx, cy, k1, k2, p1, p2;
   // Raw-sensor fisheye (equidistant) intrinsics. When fisheye_enable is set, every
   // captured frame is undistorted from this model to the fx/fy/cx/cy pinhole above
@@ -120,6 +121,10 @@ Params loadParameters(rclcpp::Node *node) {
   // axes span the board plane. "xfwd" is the ROS standard; "zfwd" fits lidars
   // that publish camera-style axes (z forward, x right/lateral, y up).
   params.lidar_frame = ros_params::value<string>(node, "lidar_frame", string("xfwd"));
+  // RANSAC plane inlier gate for board extraction. 0.02 suits a flat board;
+  // raise toward 0.05 for a warped board so all four hole rims stay in the
+  // plane cloud (at the cost of some center accuracy).
+  params.plane_dist_threshold = ros_params::value(node, "plane_dist_threshold", 0.02);
   params.x_min = ros_params::value(node, "x_min", 1.5);
   params.x_max = ros_params::value(node, "x_max", 3.0);
   params.y_min = ros_params::value(node, "y_min", -1.5);
