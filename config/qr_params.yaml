@@ -70,21 +70,32 @@
       # fisheye_k3: -0.05607144
       # fisheye_k4: 0.01668350
 
+      # (M20 fisheye values kept above for reference; not in use.)
+      # fisheye_enable: true
+      # fisheye_fx: 425.37407
+      # fisheye_fy: 427.03157
+      # fisheye_cx: 655.98842
+      # fisheye_cy: 328.50014
+      # fisheye_k1: 0.10007658
+      # fisheye_k2: -0.07603503
+      # fisheye_k3: 0.03403911
+      # fisheye_k4: -0.00712949
+
+      # (M20  Calibration over 30 views intrinsic_20260831_194842)
       fisheye_enable: true
-      fisheye_fx: 425.37407
-      fisheye_fy: 427.03157
-      fisheye_cx: 655.98842
-      fisheye_cy: 328.50014
-      fisheye_k1: 0.10007658
-      fisheye_k2: -0.07603503
-      fisheye_k3: 0.03403911
-      fisheye_k4: -0.00712949      
+      fisheye_fx: 464.24347
+      fisheye_fy: 463.84947
+      fisheye_cx: 652.89035
+      fisheye_cy: 332.84741
+      fisheye_k1: 0.00664282
+      fisheye_k2: 0.08602710
+      fisheye_k3: -0.10832863
+      fisheye_k4: 0.03637356
 
       # Virtual pinhole target for the undistorted frame above. Zero
       # distortion because undistortFisheyeImage() already removed it
-      # upstream; this extrinsic is valid for the raw fisheye stream as well
-      # (undistortion only changes the pixel<->ray mapping, not the optical
-      # center or axes).
+      # upstream. REQUIRED whenever fisheye_enable is true -- without it the
+      # undistortion maps into a garbage camera and no markers are found.
       fx: 460.0
       fy: 460.0
       cx: 639.5
@@ -93,6 +104,19 @@
       k2: 0.0
       p1: 0.0
       p2: 0.0
+
+      # RealSense D435i color camera, 1280x720, plumb_bob with zero
+      # distortion (values straight from /camera/camera/color/camera_info,
+      # 2026-08-26). Not a fisheye, so no undistortion step is needed.
+      # fisheye_enable: false
+      # fx: 912.8695068359375
+      # fy: 913.01513671875
+      # cx: 651.4449462890625
+      # cy: 370.99005126953125
+      # k1: 0.0
+      # k2: 0.0
+      # p1: 0.0
+      # p2: 0.0
 
     # Calibration target parameters
       marker_size: 0.20 # ArUco marker size (our test data uses 0.16m; adjust to match your marker size)
@@ -131,17 +155,40 @@
       # y_max: 4.0
       # z_min: 0.0
       # z_max: 2.0
-    # pose 3: board at ~2.36 m (measured live 2026-08-19)
-      x_min: -1.18
-      x_max: 0.30
-      y_min: -0.68
-      y_max: 0.94
-      z_min: 1.64
-      z_max: 3.11
+    # pose 3: board at ~2.36 m (measured live 2026-08-19, zfwd frame)
+      # x_min: -1.18
+      # x_max: 0.30
+      # y_min: -0.68
+      # y_max: 0.94
+      # z_min: 1.64
+      # z_max: 3.11
+
+    # /lidar (base_link, x-fwd/y-left/z-up), d435i session 2026-08-26.
+    # pose 1: x 3.11-3.78, y -0.62..1.01, z -1.15..0.01
+      # x_min: 2.90
+      # x_max: 4.00
+      # y_min: -0.75
+      # y_max: 1.15
+      # z_min: -1.25
+      # z_max: 0.10
+    # pose 2: board plane at x 2.76-3.37, y -0.71..1.32, z -1.09..0.05
+      # x_min: 2.65
+      # x_max: 3.50
+      # y_min: -0.50
+      # y_max: 1.35
+      # z_min: -1.15
+      # z_max: 0.10
+    # pose 3: board plane at x 2.61-3.45, y -0.33..1.13, z -1.08..0.05
+      x_min: 2.50
+      x_max: 3.55
+      y_min: -0.45
+      y_max: 1.25
+      z_min: -1.15
+      z_max: 0.10
 
 
     # Input
     # lidar_topic, bag_path, image_path and output_path default to package-relative
     # paths in the launch files below (see calib.launch.py / multi_calib.launch.py),
     # which is where you should override them for your own data.
-      lidar_topic: "/lidar_points_front" # /ouster/points /livox/lidar
+      lidar_topic: "/lidar" # /lidar_points_front /ouster/points /livox/lidar

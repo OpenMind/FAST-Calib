@@ -373,6 +373,7 @@ void saveCalibrationResults(const Params& params, const Eigen::Matrix4f& transfo
   }
  
   imwrite(outputDir + "qr_detect.png", img_input);
+  std::cout << BOLDYELLOW << "[Result] Saved detection overlay to " << BOLDWHITE << outputDir << "qr_detect.png" << RESET << std::endl;
 }
 
 void sortPatternCenters(pcl::PointCloud<pcl::PointXYZ>::Ptr pc,

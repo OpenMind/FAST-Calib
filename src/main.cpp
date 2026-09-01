@@ -152,6 +152,16 @@ int main(int argc, char **argv)
     std::cout << BOLDYELLOW << "[Result] Single-scene calibration: extrinsic parameters T_cam_lidar = " << RESET << std::endl;
     std::cout << BOLDCYAN << std::fixed << std::setprecision(6) << transformation << RESET << std::endl;
 
+    // 将对齐后的 LiDAR 圆心投影到图像上（红色十字），与相机圆心（绿色圆点）
+    // 对比：两者重合即说明该场景的标定良好。
+    for (const auto &pt : *aligned_lidar_centers)
+    {
+        cv::Point2f uv = qrDetectPtr->projectPointDist(
+            cv::Point3f(pt.x, pt.y, pt.z), qrDetectPtr->cameraMatrix_, qrDetectPtr->distCoeffs_);
+        cv::drawMarker(qrDetectPtr->imageCopy_, uv, cv::Scalar(0, 0, 255),
+                       cv::MARKER_CROSS, 24, 2);
+    }
+
     pcl::PointCloud<pcl::PointXYZRGB>::Ptr colored_cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
     projectPointCloudToImage(cloud_input, transformation, qrDetectPtr->cameraMatrix_, qrDetectPtr->distCoeffs_, img_input, colored_cloud);
 
