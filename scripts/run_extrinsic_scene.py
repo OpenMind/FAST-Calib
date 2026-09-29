@@ -188,8 +188,10 @@ def main():
     ap.add_argument("scene", choices=["check", "1", "2", "3", "solve"])
     ap.add_argument("--image-topic", default="/camera/front/image_raw")
     ap.add_argument("--lidar-topic", default="/lidar")
-    ap.add_argument("--lidar-frame", default="xfwd",
-                    help="'xfwd' for /lidar (base_link), 'zfwd' for /lidar_points_front")
+    ap.add_argument("--lidar-frame", default="xfwd", choices=["xfwd", "zfwd", "nyfwd"],
+                    help="'xfwd' for /lidar (base_link), 'zfwd' for /lidar_points_front, "
+                         "'nyfwd' for an x-fwd lidar yawed 90 deg so the camera looks along its -Y "
+                         "(e.g. the rover's /livox/lidar)")
     ap.add_argument("--session", default=None,
                     help="session folder (default output/extrinsic_<today>)")
     ap.add_argument("--capture-seconds", type=float, default=6.0)
@@ -197,7 +199,7 @@ def main():
 
     session = args.session or os.path.join(PKG, "output", "extrinsic_" + datetime.now().strftime("%Y%m%d"))
     os.makedirs(session, exist_ok=True)
-    depth_axis = 0 if args.lidar_frame == "xfwd" else 2
+    depth_axis = 2 if args.lidar_frame == "zfwd" else 0
 
     if args.scene == "solve":
         rec = os.path.join(session, "circle_center_record.txt")
@@ -219,7 +221,16 @@ def main():
     print(f"session folder: {session}")
     print(f"capturing {args.lidar_topic} to locate the board ...")
     pts = capture_cloud(args.lidar_topic, 4.0)
-    box, info = find_board_box(pts, depth_axis=depth_axis)
+    if args.lidar_frame == "nyfwd":
+        # search in a frame whose +x is the lidar's -y, then map the box back:
+        # searched (x', y', z) = (-y, x, z)  =>  raw x = y', raw y = -x'
+        box, info = find_board_box(np.c_[-pts[:, 1], pts[:, 0], pts[:, 2]], depth_axis=0)
+        if box is not None:
+            box = {"x_min": box["y_min"], "x_max": box["y_max"],
+                   "y_min": -box["x_max"], "y_max": -box["x_min"],
+                   "z_min": box["z_min"], "z_max": box["z_max"]}
+    else:
+        box, info = find_board_box(pts, depth_axis=depth_axis)
     print(info)
     if box is None:
         sys.exit("Board not usable: adjust placement (all 4 holes visible to the LiDAR, "

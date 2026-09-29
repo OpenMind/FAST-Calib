@@ -75,7 +75,7 @@ struct Params {
   double live_capture_seconds;
   int rtsp_warmup_frames;
   string lidar_type; // "auto" | "solid" | "mech" | "grid"
-  string lidar_frame; // "xfwd" (ROS: x fwd, y left, z up) | "zfwd" (camera-style: z fwd, x right, y up)
+  string lidar_frame; // "xfwd" (ROS: x fwd, y left, z up) | "zfwd" (camera-style: z fwd, x right, y up) | "nyfwd" (ROS axes, camera along -y)
 };
 
 // 读取参数
@@ -119,7 +119,8 @@ Params loadParameters(rclcpp::Node *node) {
   params.lidar_type = ros_params::value<string>(node, "lidar_type", string("auto"));
   // Axis convention of the lidar frame; correspondence sorting must know which
   // axes span the board plane. "xfwd" is the ROS standard; "zfwd" fits lidars
-  // that publish camera-style axes (z forward, x right/lateral, y up).
+  // that publish camera-style axes (z forward, x right/lateral, y up); "nyfwd"
+  // fits an x-fwd/y-left/z-up lidar yawed 90 deg so the camera looks along its -Y.
   params.lidar_frame = ros_params::value<string>(node, "lidar_frame", string("xfwd"));
   // RANSAC plane inlier gate for board extraction. 0.02 suits a flat board;
   // raise toward 0.05 for a warped board so all four hole rims stay in the
@@ -396,6 +397,10 @@ void sortPatternCenters(pcl::PointCloud<pcl::PointXYZ>::Ptr pc,
         pt.x = p.x;    // LiDAR X (right) -> Cam X
         pt.y = -p.y;   // LiDAR Y (up)    -> Cam -Y
         pt.z = p.z;    // LiDAR Z (fwd)   -> Cam Z
+      } else if (lidar_frame == "nyfwd") {
+        pt.x = -p.x;   // LiDAR -X (right) -> Cam X
+        pt.y = -p.z;   // LiDAR Z (up)     -> Cam -Y
+        pt.z = -p.y;   // LiDAR -Y (fwd)   -> Cam Z
       } else {
         pt.x = -p.y;   // LiDAR Y -> Cam -X
         pt.y = -p.z;   // LiDAR Z -> Cam -Y
@@ -445,6 +450,13 @@ void sortPatternCenters(pcl::PointCloud<pcl::PointXYZ>::Ptr pc,
     for (auto& point : v->points) {
       if (lidar_frame == "zfwd") {
         point.y = -point.y;     // Cam -Y -> LiDAR Y (x and z map identically)
+      } else if (lidar_frame == "nyfwd") {
+        float x_new = -point.x; // Cam X -> LiDAR -X
+        float y_new = -point.z; // Cam Z -> LiDAR -Y
+        float z_new = -point.y; // Cam -Y -> LiDAR Z
+        point.x = x_new;
+        point.y = y_new;
+        point.z = z_new;
       } else {
         float x_new = point.z;  // Cam Z -> LiDAR X
         float y_new = -point.x; // Cam -X -> LiDAR Y

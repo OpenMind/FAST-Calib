@@ -102,7 +102,8 @@ def generate_launch_description():
                 default_value="zfwd",
                 description="Axis convention of the lidar frame: 'zfwd' (camera-style: "
                 "z forward, x right, y up — matches /lidar_points_front) or 'xfwd' "
-                "(ROS standard: x forward, y left, z up)",
+                "(ROS standard: x forward, y left, z up) or 'nyfwd' (ROS axes, lidar yawed 90 "
+                "deg so the camera looks along its -Y)",
             ),
             DeclareLaunchArgument(
                 "rtsp_warmup_frames",
