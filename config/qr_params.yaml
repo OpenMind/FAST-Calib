@@ -82,28 +82,42 @@
       # fisheye_k4: -0.00712949
 
       # (M20  Calibration over 30 views intrinsic_20260831_194842)
-      fisheye_enable: true
-      fisheye_fx: 464.24347
-      fisheye_fy: 463.84947
-      fisheye_cx: 652.89035
-      fisheye_cy: 332.84741
-      fisheye_k1: 0.00664282
-      fisheye_k2: 0.08602710
-      fisheye_k3: -0.10832863
-      fisheye_k4: 0.03637356
+      # fisheye_enable: true
+      # fisheye_fx: 464.24347
+      # fisheye_fy: 463.84947
+      # fisheye_cx: 652.89035
+      # fisheye_cy: 332.84741
+      # fisheye_k1: 0.00664282
+      # fisheye_k2: 0.08602710
+      # fisheye_k3: -0.10832863
+      # fisheye_k4: 0.03637356
 
       # Virtual pinhole target for the undistorted frame above. Zero
       # distortion because undistortFisheyeImage() already removed it
       # upstream. REQUIRED whenever fisheye_enable is true -- without it the
       # undistortion maps into a garbage camera and no markers are found.
-      fx: 460.0
-      fy: 460.0
-      cx: 639.5
-      cy: 359.5
-      k1: 0.0
-      k2: 0.0
-      p1: 0.0
-      p2: 0.0
+      # fx: 460.0
+      # fy: 460.0
+      # cx: 639.5
+      # cy: 359.5
+      # k1: 0.0
+      # k2: 0.0
+      # p1: 0.0
+      # p2: 0.0
+
+      # Jetson IMX219 on /camera/image_raw, 640x480 pinhole (plumb_bob),
+      # calibrated 2026-09-29 with calibrate_jetson_cam.py over 45 views
+      # (calib_data/intrinsic_20260929_114400, RMS 0.74 px). fx != fy is real:
+      # gscam captures 1280x720 and nvvidconv squashes it to 640x480 (4:3).
+      fisheye_enable: false
+      fx: 437.87991
+      fy: 583.85654
+      cx: 311.20860
+      cy: 236.70484
+      k1: -0.35233423
+      k2: 0.10867620
+      p1: -0.00150725
+      p2: 0.00015374
 
       # RealSense D435i color camera, 1280x720, plumb_bob with zero
       # distortion (values straight from /camera/camera/color/camera_info,
@@ -191,4 +205,4 @@
     # lidar_topic, bag_path, image_path and output_path default to package-relative
     # paths in the launch files below (see calib.launch.py / multi_calib.launch.py),
     # which is where you should override them for your own data.
-      lidar_topic: "/lidar" # /lidar_points_front /ouster/points /livox/lidar
+      lidar_topic: "/livox/lidar" # /lidar /lidar_points_front /ouster/points /livox/lidar
