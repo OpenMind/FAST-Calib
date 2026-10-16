@@ -1,5 +1,7 @@
 # FAST-Calib
 
+> **M20 + SIYI PTZ camera:** scripts and a guided web page for calibrating the PTZ camera to the M20's front LiDAR are in [`scripts/M20_PTZ_CALIB.md`](scripts/M20_PTZ_CALIB.md).
+
 ## FAST-Calib: LiDAR-Camera Extrinsic Calibration in One Second
 
 FAST-Calib is an efficient target-based extrinsic calibration tool for LiDAR-camera systems (eg., [FAST-LIVO2](https://github.com/hku-mars/FAST-LIVO2)). 

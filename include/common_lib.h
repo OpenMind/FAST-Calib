@@ -57,6 +57,9 @@ POINT_CLOUD_REGISTER_POINT_STRUCT(Common::Point,
 // 参数结构体
 struct Params {
   double x_min, x_max, y_min, y_max, z_min, z_max;
+  double lidar_up_x, lidar_up_y, lidar_up_z;  // world 'up' in the LiDAR frame
+  double plane_dist_threshold;                // board plane RANSAC, metres
+  string lidar_type;                          // "" = from the bag (mech/solid), or mech | solid | grid
   double fx, fy, cx, cy, k1, k2, p1, p2;
   double marker_size, delta_width_qr_center, delta_height_qr_center;
   double delta_width_circles, delta_height_circles, circle_radius;
@@ -95,6 +98,11 @@ Params loadParameters(rclcpp::Node *node) {
   params.y_max = ros_params::value(node, "y_max", 2.0);
   params.z_min = ros_params::value(node, "z_min", -0.5);
   params.z_max = ros_params::value(node, "z_max", 2.0);
+  params.lidar_up_x = ros_params::value(node, "lidar_up_x", 0.0);
+  params.lidar_up_y = ros_params::value(node, "lidar_up_y", 0.0);
+  params.lidar_up_z = ros_params::value(node, "lidar_up_z", 1.0);
+  params.plane_dist_threshold = ros_params::value(node, "plane_dist_threshold", 0.01);
+  params.lidar_type = ros_params::value<string>(node, "lidar_type", string(""));
   return params;
 }
 
@@ -319,7 +327,8 @@ void saveCalibrationResults(const Params& params, const Eigen::Matrix4f& transfo
 
 void sortPatternCenters(pcl::PointCloud<pcl::PointXYZ>::Ptr pc,
                         pcl::PointCloud<pcl::PointXYZ>::Ptr v,
-                        const std::string& axis_mode = "camera") 
+                        const std::string& axis_mode = "camera",
+                        const Eigen::Vector3f& lidar_up = Eigen::Vector3f(0, 0, 1)) 
 {
   if (pc->size() != 4) {
     std::cerr << BOLDRED << "[sortPatternCenters] Number of " << axis_mode << " center points to be sorted is not 4." << RESET << std::endl;
@@ -329,13 +338,24 @@ void sortPatternCenters(pcl::PointCloud<pcl::PointXYZ>::Ptr pc,
   pcl::PointCloud<pcl::PointXYZ>::Ptr work_pc(new pcl::PointCloud<pcl::PointXYZ>());
 
   // Coordinate transformation (LiDAR -> Camera)
+  // A camera-like frame looking from the LiDAR at the board: z toward the
+  // board, y down (against lidar_up), x right. With lidar_up = +Z and the board
+  // ahead on +X this is the original fixed mapping (Cam X = -LiDAR Y,
+  // Cam Y = -LiDAR Z, Cam Z = LiDAR X); a tilted LiDAR sets lidar_up instead.
+  Eigen::Matrix3f R_cl = Eigen::Matrix3f::Identity();  // rows: cam axes in LiDAR frame
   if (axis_mode == "lidar") {
+    Eigen::Vector3f c(0, 0, 0);
+    for (const auto& p : *pc) c += Eigen::Vector3f(p.x, p.y, p.z);
+    Eigen::Vector3f zc = (c / pc->size()).normalized();
+    Eigen::Vector3f up = lidar_up.normalized();
+    Eigen::Vector3f yc = -(up - up.dot(zc) * zc).normalized();
+    Eigen::Vector3f xc = yc.cross(zc);
+    R_cl.row(0) = xc.transpose();
+    R_cl.row(1) = yc.transpose();
+    R_cl.row(2) = zc.transpose();
     for (const auto& p : *pc) {
-      pcl::PointXYZ pt;
-      pt.x = -p.y;   // LiDAR Y -> Cam -X
-      pt.y = -p.z;   // LiDAR Z -> Cam -Y
-      pt.z = p.x;    // LiDAR X -> Cam Z
-      work_pc->push_back(pt);
+      Eigen::Vector3f q = R_cl * Eigen::Vector3f(p.x, p.y, p.z);
+      work_pc->push_back(pcl::PointXYZ(q.x(), q.y(), q.z()));
     }
   } else {
     *work_pc = *pc;
@@ -377,12 +397,10 @@ void sortPatternCenters(pcl::PointCloud<pcl::PointXYZ>::Ptr pc,
   // 6. If the original input was in the lidar frame, transform the sorted points back
   if (axis_mode == "lidar") {
     for (auto& point : v->points) {
-      float x_new = point.z;    // Cam Z -> LiDAR X
-      float y_new = -point.x;   // Cam -X -> LiDAR Y
-      float z_new = -point.y;   // Cam -Y -> LiDAR Z
-      point.x = x_new;
-      point.y = y_new;
-      point.z = z_new;
+      Eigen::Vector3f q = R_cl.transpose() * Eigen::Vector3f(point.x, point.y, point.z);
+      point.x = q.x();
+      point.y = q.y();
+      point.z = q.z();
     }
   }
 }

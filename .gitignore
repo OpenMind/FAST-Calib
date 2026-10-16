@@ -3,3 +3,4 @@ output/*
 build/*
 install/*
 log/*
+__pycache__/

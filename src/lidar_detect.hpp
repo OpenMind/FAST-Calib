@@ -19,6 +19,7 @@ class LidarDetect
 {
 private:
     double x_min_, x_max_, y_min_, y_max_, z_min_, z_max_;
+    double plane_dist_threshold_;
     double circle_radius_, delta_width_circles_, delta_height_circles_;
     rclcpp::Logger logger_;
 
@@ -52,6 +53,7 @@ public:
         z_min_ = params.z_min;
         z_max_ = params.z_max;
         circle_radius_ = params.circle_radius;
+        plane_dist_threshold_ = params.plane_dist_threshold;
         delta_width_circles_ = params.delta_width_circles;
         delta_height_circles_ = params.delta_height_circles;
 
@@ -96,7 +98,7 @@ public:
         pcl::SACSegmentation<Common::Point> plane_segmentation;
         plane_segmentation.setModelType(pcl::SACMODEL_PLANE);
         plane_segmentation.setMethodType(pcl::SAC_RANSAC);
-        plane_segmentation.setDistanceThreshold(0.01);  // 平面分割阈值
+        plane_segmentation.setDistanceThreshold(plane_dist_threshold_);  // 平面分割阈值
         plane_segmentation.setInputCloud(filtered_cloud_);
         plane_segmentation.segment(*plane_inliers, *plane_coefficients);
     
@@ -169,6 +171,9 @@ public:
         aligned_cloud_->reserve(edge_cloud_->size());
         Eigen::Vector3d z_axis(0, 0, 1);
         Eigen::Vector3d axis = normal.cross(z_axis);
+        // AngleAxisd needs a unit axis: |normal x z| = sin(angle) skews tilted boards
+        if (axis.norm() > 1e-9) axis.normalize();
+        else axis = Eigen::Vector3d::UnitX();
         double angle = acos(normal.dot(z_axis));
 
         Eigen::AngleAxisd rotation(angle, axis);
@@ -328,6 +333,194 @@ public:
         }
     }
 
+    // 栅格占据法（移植自 m20-thor 分支的 detect_grid_lidar，并针对稀疏扫描线做了修改）：
+    // 板面点栅格化成 2D 占据图，闭运算桥接扫描线间隙，板轮廓（凸包）内的空洞即靶孔。
+    // 与扫描模式无关。改动：(1) 用凸包而不是从图像边界 flood fill 定义"板内"，板边被盲区或
+    // 稀疏扫描线切出缺口时洞仍算在板内；(2) 扫描线间隙会把洞撑大，面积上限放宽到 1.6 r；
+    // (3) 闭运算核从 7 px 起逐步加大，直到找到符合几何的 4 个洞。圆心最后用洞边缘一圈
+    // 真实板面点做最小二乘圆拟合，不受洞被撑大的影响。
+    void detect_grid_lidar(pcl::PointCloud<Common::Point>::Ptr cloud, pcl::PointCloud<pcl::PointXYZ>::Ptr center_cloud)
+    {
+        filtered_cloud_->reserve(cloud->size());
+        pcl::PassThrough<Common::Point> pass;
+        pass.setInputCloud(cloud);
+        pass.setFilterFieldName("x"); pass.setFilterLimits(x_min_, x_max_); pass.filter(*filtered_cloud_);
+        pass.setInputCloud(filtered_cloud_);
+        pass.setFilterFieldName("y"); pass.setFilterLimits(y_min_, y_max_); pass.filter(*filtered_cloud_);
+        pass.setFilterFieldName("z"); pass.setFilterLimits(z_min_, z_max_); pass.filter(*filtered_cloud_);
+        RCLCPP_INFO(logger_, "Depth filtered cloud size: %zu", filtered_cloud_->size());
+
+        pcl::ModelCoefficients::Ptr plane_coefficients(new pcl::ModelCoefficients);
+        pcl::PointIndices::Ptr plane_inliers(new pcl::PointIndices);
+        pcl::SACSegmentation<Common::Point> seg;
+        seg.setModelType(pcl::SACMODEL_PLANE);
+        seg.setMethodType(pcl::SAC_RANSAC);
+        seg.setDistanceThreshold(plane_dist_threshold_);
+        seg.setInputCloud(filtered_cloud_);
+        seg.segment(*plane_inliers, *plane_coefficients);
+        pcl::ExtractIndices<Common::Point> extract;
+        extract.setInputCloud(filtered_cloud_);
+        extract.setIndices(plane_inliers);
+        extract.filter(*plane_cloud_);
+        RCLCPP_INFO(logger_, "Plane cloud size: %zu", plane_cloud_->size());
+        if (plane_cloud_->size() < 100)
+        {
+            RCLCPP_WARN(logger_, "[LiDAR/grid] Too few plane points, abort.");
+            return;
+        }
+
+        Eigen::Vector3d normal(plane_coefficients->values[0], plane_coefficients->values[1], plane_coefficients->values[2]);
+        normal.normalize();
+        Eigen::Vector3d z_axis(0, 0, 1);
+        Eigen::Vector3d axis = normal.cross(z_axis);
+        double angle = acos(normal.dot(z_axis));
+        if (axis.norm() > 1e-9) axis.normalize();
+        else axis = Eigen::Vector3d::UnitX();
+        Eigen::Matrix3d R_align = Eigen::AngleAxisd(angle, axis).toRotationMatrix();
+
+        aligned_cloud_->clear();
+        double average_z = 0.0;
+        for (const auto &pt : *plane_cloud_)
+        {
+            Eigen::Vector3d p = R_align * Eigen::Vector3d(pt.x, pt.y, pt.z);
+            aligned_cloud_->push_back(pcl::PointXYZ(p.x(), p.y(), 0.0));
+            average_z += p.z();
+        }
+        average_z /= aligned_cloud_->size();
+
+        const float res = 0.01f;
+        float gx_min = std::numeric_limits<float>::max(), gx_max = std::numeric_limits<float>::lowest();
+        float gy_min = gx_min, gy_max = gx_max;
+        for (const auto &pt : *aligned_cloud_)
+        {
+            gx_min = std::min(gx_min, pt.x); gx_max = std::max(gx_max, pt.x);
+            gy_min = std::min(gy_min, pt.y); gy_max = std::max(gy_max, pt.y);
+        }
+        const int pad = 4;
+        const int W = static_cast<int>((gx_max - gx_min) / res) + 1 + 2 * pad;
+        const int H = static_cast<int>((gy_max - gy_min) / res) + 1 + 2 * pad;
+        if (W < 10 || H < 10 || W > 4000 || H > 4000)
+        {
+            RCLCPP_WARN(logger_, "[LiDAR/grid] Degenerate grid %dx%d, abort.", W, H);
+            return;
+        }
+        cv::Mat occ = cv::Mat::zeros(H, W, CV_8UC1);
+        for (const auto &pt : *aligned_cloud_)
+            occ.at<uint8_t>(static_cast<int>((pt.y - gy_min) / res) + pad, static_cast<int>((pt.x - gx_min) / res) + pad) = 255;
+
+        const double r_px = circle_radius_ / res;
+        std::vector<int> best_group;
+        std::vector<pcl::PointXYZ> best_centers;
+        for (int k : {7, 9, 11, 13, 15})
+        {
+            cv::Mat closed;
+            cv::morphologyEx(occ, closed, cv::MORPH_CLOSE, cv::getStructuringElement(cv::MORPH_RECT, cv::Size(k, k)));
+            std::vector<cv::Point> pts;
+            cv::findNonZero(closed, pts);
+            std::vector<cv::Point> hull_pts;
+            cv::convexHull(pts, hull_pts);
+            cv::Mat hull = cv::Mat::zeros(H, W, CV_8UC1);
+            cv::fillConvexPoly(hull, hull_pts, cv::Scalar(255));
+            cv::Mat holes = (hull == 255) & (closed == 0);
+
+            cv::Mat labels, stats, centroids;
+            int n = cv::connectedComponentsWithStats(holes, labels, stats, centroids, 8, CV_32S);
+            std::vector<pcl::PointXYZ> centers;
+            for (int i = 1; i < n; ++i)
+            {
+                double area = stats.at<int>(i, cv::CC_STAT_AREA);
+                double w = stats.at<int>(i, cv::CC_STAT_WIDTH), h = stats.at<int>(i, cv::CC_STAT_HEIGHT);
+                double r_eq = std::sqrt(area / M_PI);
+                if (r_eq < 0.75 * r_px || r_eq > 1.6 * r_px) continue;   // scan-line gaps enlarge holes
+                if (std::max(w, h) > 3.4 * r_px) continue;                // a strip along an edge, not a hole
+                double cx = (centroids.at<double>(i, 0) - pad) * res + gx_min;
+                double cy = (centroids.at<double>(i, 1) - pad) * res + gy_min;
+                // least-squares circle through the board points around the hole's rim
+                std::vector<Eigen::Vector2d> rim;
+                double r_search = r_eq * res;
+                for (const auto &pt : *aligned_cloud_)
+                {
+                    double d = std::hypot(pt.x - cx, pt.y - cy);
+                    if (d > circle_radius_ - 0.04 && d < r_search + 0.05) rim.emplace_back(pt.x, pt.y);
+                }
+                if (rim.size() >= 10)
+                {
+                    Eigen::MatrixXd A(rim.size(), 3);
+                    Eigen::VectorXd b(rim.size());
+                    for (size_t j = 0; j < rim.size(); ++j)
+                    {
+                        A(j, 0) = 2 * rim[j].x(); A(j, 1) = 2 * rim[j].y(); A(j, 2) = 1.0;
+                        b(j) = rim[j].squaredNorm();
+                    }
+                    Eigen::Vector3d sol = A.colPivHouseholderQr().solve(b);
+                    double r_fit = std::sqrt(sol(2) + sol(0) * sol(0) + sol(1) * sol(1));
+                    if (std::fabs(r_fit - circle_radius_) < 0.04 && std::hypot(sol(0) - cx, sol(1) - cy) < 0.06)
+                    {
+                        cx = sol(0); cy = sol(1);
+                    }
+                    RCLCPP_INFO(logger_, "[LiDAR/grid] k=%d hole at (%.3f, %.3f), r_eq %.3f, fitted r %.3f (%zu rim pts)",
+                                k, cx, cy, r_eq * res, r_fit, rim.size());
+                    for (const auto &rp : rim) edge_cloud_->push_back(pcl::PointXYZ(rp.x(), rp.y(), 0.0));
+                }
+                centers.push_back(pcl::PointXYZ(cx, cy, 0));
+            }
+            if (centers.size() == 3)
+            {
+                // one hole lost (board edge at the LiDAR's blind plane): if the three found form the
+                // board's L (sides delta_width x delta_height at a right angle), the fourth is fixed by
+                // the rectangle; add it opposite the right-angle corner
+                for (int c = 0; c < 3 && centers.size() == 3; ++c)
+                {
+                    const auto &P = centers[c], &A = centers[(c + 1) % 3], &B = centers[(c + 2) % 3];
+                    Eigen::Vector2d a(A.x - P.x, A.y - P.y), b(B.x - P.x, B.y - P.y);
+                    double la = a.norm(), lb = b.norm(), cosang = a.dot(b) / (la * lb);
+                    double lw = std::max(la, lb), lh = std::min(la, lb);
+                    if (std::fabs(cosang) < 0.14 &&  // 90 +- 8 deg
+                        std::fabs(lw - delta_width_circles_) / delta_width_circles_ < GEOMETRY_TOLERANCE &&
+                        std::fabs(lh - delta_height_circles_) / delta_height_circles_ < GEOMETRY_TOLERANCE)
+                    {
+                        centers.push_back(pcl::PointXYZ(A.x + B.x - P.x, A.y + B.y - P.y, 0));
+                        RCLCPP_WARN(logger_, "[LiDAR/grid] k=%d: 3 holes form the target's L, 4th completed at (%.3f, %.3f). "
+                                    "Better: move the board so the LiDAR sees all of it.", k, centers.back().x, centers.back().y);
+                    }
+                }
+            }
+            if (centers.size() < 4) continue;
+            std::vector<std::vector<int>> groups;
+            comb(centers.size(), TARGET_NUM_CIRCLES, groups);
+            int valid = 0, idx = -1;
+            for (size_t i = 0; i < groups.size(); ++i)
+            {
+                std::vector<pcl::PointXYZ> cand;
+                for (int j : groups[i]) cand.push_back(centers[j]);
+                if (Square(cand, delta_width_circles_, delta_height_circles_).is_valid()) { ++valid; idx = i; }
+            }
+            if (valid == 1)
+            {
+                best_group = groups[idx];
+                best_centers = centers;
+                RCLCPP_INFO(logger_, "[LiDAR/grid] 4 holes matching the target with a %d px closing.", k);
+                break;
+            }
+            if (valid > 1)
+                RCLCPP_WARN(logger_, "[LiDAR/grid] k=%d: several hole sets fit the target, trying the next size.", k);
+        }
+        center_z0_cloud_->clear();
+        for (const auto &c : best_centers) center_z0_cloud_->push_back(c);
+        if (best_group.empty())
+        {
+            RCLCPP_WARN(logger_, "[LiDAR/grid] Unable to find a candidate set that matches target's geometry");
+            return;
+        }
+        Eigen::Matrix3d R_inv = R_align.inverse();
+        for (int j : best_group)
+        {
+            const auto &c = best_centers[j];
+            Eigen::Vector3d p = R_inv * Eigen::Vector3d(c.x, c.y, average_z);
+            center_cloud->points.push_back(pcl::PointXYZ(p.x(), p.y(), p.z()));
+        }
+    }
+
     void detect_solid_lidar(pcl::PointCloud<Common::Point>::Ptr cloud, pcl::PointCloud<pcl::PointXYZ>::Ptr center_cloud)
     {
         // 1. X、Y、Z方向滤波
@@ -367,7 +560,7 @@ public:
         pcl::SACSegmentation<Common::Point> plane_segmentation;
         plane_segmentation.setModelType(pcl::SACMODEL_PLANE);
         plane_segmentation.setMethodType(pcl::SAC_RANSAC);
-        plane_segmentation.setDistanceThreshold(0.01);  // 平面分割阈值
+        plane_segmentation.setDistanceThreshold(plane_dist_threshold_);  // 平面分割阈值
         plane_segmentation.setInputCloud(filtered_cloud_);
         plane_segmentation.segment(*plane_inliers, *plane_coefficients);
     
@@ -387,6 +580,9 @@ public:
         Eigen::Vector3d z_axis(0, 0, 1);
 
         Eigen::Vector3d axis = normal.cross(z_axis);
+        // AngleAxisd needs a unit axis: |normal x z| = sin(angle) skews tilted boards
+        if (axis.norm() > 1e-9) axis.normalize();
+        else axis = Eigen::Vector3d::UnitX();
         double angle = acos(normal.dot(z_axis));
 
         Eigen::AngleAxisd rotation(angle, axis);

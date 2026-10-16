@@ -40,8 +40,17 @@ int main(int argc, char **argv)
     PointCloud<PointXYZ>::Ptr lidar_center_cloud(new PointCloud<PointXYZ>);
     lidar_center_cloud->reserve(4);
 
-    switch (dataPreprocessPtr->lidar_type_)
+    LiDARType lidar_type = dataPreprocessPtr->lidar_type_;
+    if (params.lidar_type == "solid") lidar_type = LiDARType::Solid;
+    else if (params.lidar_type == "mech") lidar_type = LiDARType::Mech;
+    else if (params.lidar_type == "grid") lidar_type = LiDARType::Grid;
+
+    switch (lidar_type)
     {
+        case LiDARType::Grid:
+            lidarDetectPtr->detect_grid_lidar(cloud_input, lidar_center_cloud);
+            break;
+
         case LiDARType::Solid:
             lidarDetectPtr->detect_solid_lidar(cloud_input, lidar_center_cloud);
             break;
@@ -57,11 +66,28 @@ int main(int argc, char **argv)
             break;
     }
 
+    // 中间点云存盘，检测失败时可离线查看 (dbg_*.pcd)
+    {
+        std::string dir = params.output_path;
+        if (!dir.empty() && dir.back() != '/') dir += '/';
+        auto dump = [&dir](const std::string &name, const auto &cloud) {
+            if (cloud && !cloud->empty()) pcl::io::savePCDFileBinary(dir + name, *cloud);
+        };
+        dump("dbg_filtered.pcd", lidarDetectPtr->getFilteredCloud());
+        dump("dbg_plane.pcd", lidarDetectPtr->getPlaneCloud());
+        dump("dbg_edge.pcd", lidarDetectPtr->getEdgeCloud());
+        dump("dbg_aligned_edge.pcd", lidarDetectPtr->getAlignedCloud());
+        dump("dbg_circle_centers.pcd", lidarDetectPtr->getCenterZ0Cloud());
+    }
+    RCLCPP_INFO(node->get_logger(), "LiDAR hole centers found: %zu, camera: %zu",
+                lidar_center_cloud->size(), qr_center_cloud->size());
+
     // 对 QR 和 LiDAR 检测到的圆心进行排序
     PointCloud<PointXYZ>::Ptr qr_centers(new PointCloud<PointXYZ>);
     PointCloud<PointXYZ>::Ptr lidar_centers(new PointCloud<PointXYZ>);
     sortPatternCenters(qr_center_cloud, qr_centers, "camera");
-    sortPatternCenters(lidar_center_cloud, lidar_centers, "lidar");
+    sortPatternCenters(lidar_center_cloud, lidar_centers, "lidar",
+                       Eigen::Vector3f(params.lidar_up_x, params.lidar_up_y, params.lidar_up_z));
 
     // 保存中间结果：排序后的 LiDAR 圆心和 QR 圆心
     saveTargetHoleCenters(lidar_centers, qr_centers, params);
@@ -85,6 +111,15 @@ int main(int argc, char **argv)
 
     std::cout << BOLDYELLOW << "[Result] Single-scene calibration: extrinsic parameters T_cam_lidar = " << RESET << std::endl;
     std::cout << BOLDCYAN << std::fixed << std::setprecision(6) << transformation << RESET << std::endl;
+
+    // LiDAR hole centers through the result onto the detection image (red crosses):
+    // they should sit on the camera's hole centers
+    for (const auto &pt : *aligned_lidar_centers)
+    {
+      cv::Point2f uv = qrDetectPtr->projectPointDist(cv::Point3f(pt.x, pt.y, pt.z),
+                                                     qrDetectPtr->cameraMatrix_, qrDetectPtr->distCoeffs_);
+      cv::drawMarker(qrDetectPtr->imageCopy_, uv, cv::Scalar(0, 0, 255), cv::MARKER_CROSS, 24, 2);
+    }
 
     pcl::PointCloud<pcl::PointXYZRGB>::Ptr colored_cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
     projectPointCloudToImage(cloud_input, transformation, qrDetectPtr->cameraMatrix_, qrDetectPtr->distCoeffs_, img_input, colored_cloud);
