@@ -33,7 +33,8 @@ enum class LiDARType : int {
     Unknown = 0,
     Solid   = 1,   // 固态（如 Livox）
     Mech    = 2,   // 机械式多线
-    Grid    = 3    // 栅格占据法：与扫描模式无关（lidar_type: grid）
+    Grid    = 3,   // 栅格占据法：与扫描模式无关（lidar_type: grid）
+    Pattern = 4    // 4 holes fitted as one rigid pattern (lidar_type: pattern)
 };
 
 class DataPreprocess

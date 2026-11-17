@@ -59,7 +59,7 @@ struct Params {
   double x_min, x_max, y_min, y_max, z_min, z_max;
   double lidar_up_x, lidar_up_y, lidar_up_z;  // world 'up' in the LiDAR frame
   double plane_dist_threshold;                // board plane RANSAC, metres
-  string lidar_type;                          // "" = from the bag (mech/solid), or mech | solid | grid
+  string lidar_type;                          // "" = from the bag (mech/solid), or mech | solid | grid | pattern
   double fx, fy, cx, cy, k1, k2, p1, p2;
   double marker_size, delta_width_qr_center, delta_height_qr_center;
   double delta_width_circles, delta_height_circles, circle_radius;

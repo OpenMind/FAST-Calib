@@ -164,9 +164,9 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    // 取最后3个 block
+    // every block (scene): more board poses constrain the solve better than the last 3
     std::vector<Eigen::Vector3d> L, C;
-    for (size_t k = blocks.size() - 3; k < blocks.size(); ++k) 
+    for (size_t k = 0; k < blocks.size(); ++k) 
     {
         const auto& b = blocks[k];
         // 依次拼入，保持顺序一致
@@ -176,8 +176,8 @@ int main(int argc, char** argv)
             C.push_back(b.qr_pts[i]);
         }
     }
-    if (L.size() != 12 || C.size() != 12) {
-        RCLCPP_ERROR(node->get_logger(), "Merged pairs not equal to 12 (L=%zu, C=%zu).", L.size(), C.size());
+    if (L.size() != 4 * blocks.size() || C.size() != L.size()) {
+        RCLCPP_ERROR(node->get_logger(), "Merged pairs not 4 per scene (L=%zu, C=%zu, scenes %zu).", L.size(), C.size(), blocks.size());
         return 1;
     }
 

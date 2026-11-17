@@ -8,7 +8,8 @@
 Each scene: `fast_calib` on its params.yaml (its RMSE and T_cam_lidar). Then each scene's
 hole centres go into one record and `multi_fast_calib` solves them together. Writes into
 <session>/out/:
-  camera_extrinsics.yaml   T_cam_lidar, T_base_cam (camera in base_link), intrinsics, gimbal angle
+  camera_extrinsics.yaml   T_cam_lidar, T_base_cam (camera in base_link), intrinsics, gimbal angle, and
+                           what to set so that Lumen's yaw 0 / pitch 0 is truly the robot's front / level
   overlay_<scene>.jpg      the LiDAR projected onto each picture, coloured by distance
 The RViz view of each single scene: add --rviz.
 """
@@ -139,7 +140,8 @@ def main():
             print(f"  FAILED: no result (see {s}/out/fast_calib.log)")
             continue
         rmse = float(m.group(1)) if m else None
-        print(f"  RMSE {rmse} m")
+        print(f"  RMSE {rmse} m" + ("   (pattern: ~0 by construction, both sides exact rectangles; "
+                                    "the joint solve and the scenes' agreement below are the check)" if "[LiDAR/pattern]" in log else ""))
         if rmse is None or rmse > 0.03:
             # holes matched wrongly or a bad hole fit: 3-5 mm is normal
             print(f"  LEFT OUT: RMSE above 3 cm (look at {s}/out/qr_detect.png: red crosses should sit on the holes)")
@@ -153,9 +155,7 @@ def main():
     out = os.path.join(a.session, "out")
     os.makedirs(out, exist_ok=True)
     names = list(results)
-    if len(names) > 3:  # multi_fast_calib solves the last 3 records: give it the 3 best scenes
-        names = sorted(names, key=lambda n: results[n]["rmse"] or 9)[:3]
-        print(f"\nusing the 3 scenes with the lowest RMSE: {names}")
+    # multi_fast_calib solves every scene in the record together
     if len(results) >= 3:
         open(os.path.join(out, "circle_center_record.txt"), "w").write("\n".join(sum((results[n]["record"] for n in names), [])) + "\n")
         mparams = os.path.join(out, "params.yaml")
@@ -196,10 +196,31 @@ def main():
     print(f"\ncamera in base_link: at ({T_bc[0, 3]:.3f}, {T_bc[1, 3]:.3f}, {T_bc[2, 3]:.3f}) m, "
           f"looking yaw {yaw:.1f} pitch {pitch:+.1f} (+ = down) roll {roll:+.1f} deg")
     g = metas[0]["gimbal_attitude_median"]
-    print(f"  (base_link yaw -90 = straight right; the gimbal reported yaw {g[0]:.1f} pitch {g[1]:.1f})" if g else "")
-    # gimbal yaw +N (to the right) is base_link yaw -N; the mount is not exact, so allow 10 deg
-    if g and (abs(yaw + g[0]) > 10 or abs(pitch - g[1]) > 10):
+    print(f"  (base_link yaw -90 = straight right; the gimbal reported yaw {g[0]:.1f} pitch {g[1]:.1f}, + = right / up)" if g else "")
+    # Lumen: gimbal yaw +N (to the right) is base_link yaw -N, gimbal pitch +N (up) is camera pitch -N here
+    # (+ = down). The mount is not exact, so allow 10 deg
+    if g and (abs(yaw + g[0]) > 10 or abs(pitch + g[1]) > 10):
         print("  WARNING: that is not the gimbal's angle: check the result before using it")
+    zero = metas[0].get("lumen_gimbal_zero") or {"forward_azimuth": 0.0, "level_elevation": 0.0, "source": "assumed"}
+    fix = None
+    if g:
+        # where the camera really looks (yaw + right, pitch + up) minus what Lumen reported: Lumen's error
+        d_yaw, d_pitch = -yaw - g[0], -pitch - g[1]
+        # Lumen: yaw = azimuth - FORWARD_AZIMUTH, pitch = elevation - LEVEL_ELEVATION (YAW_SIGN, PITCH_SIGN 1)
+        fix = dict(d_yaw=d_yaw, d_pitch=d_pitch,
+                   forward_azimuth=(zero["forward_azimuth"] - d_yaw) % 360, level_elevation=zero["level_elevation"] - d_pitch)
+        print(f"\nLumen's yaw 0 / pitch 0 is really {d_yaw:+.2f} deg {'right' if d_yaw >= 0 else 'left'}, "
+              f"{d_pitch:+.2f} deg {'up' if d_pitch >= 0 else 'down'} of the robot's front / level "
+              f"(current zero from {zero['source']}: azimuth {zero['forward_azimuth']}, elevation {zero['level_elevation']}).")
+        print("  To make yaw 0 / pitch 0 exact, set in Lumen's environment (then restart lumen):")
+        print(f"    LUMEN_GIMBAL_FORWARD_AZIMUTH={fix['forward_azimuth']:.1f}")
+        print(f"    LUMEN_GIMBAL_LEVEL_ELEVATION={fix['level_elevation']:.1f}")
+        print("  (the head turns in 0.1 deg steps; roll cannot be corrected by the head)")
+    print("  The PTZ extrinsics for the orchestrator (/ptz/extrinsics, used to aim at map targets), with")
+    print("  the offsets left at 0 once Lumen's zero is set as above (do not correct the same error twice):")
+    print(f'    {{"x": {T_bc[0, 3]:.3f}, "y": {T_bc[1, 3]:.3f}, "z": {T_bc[2, 3]:.3f}, "yaw_sign": -1, '
+          f'"yaw_offset_deg": 0.0, "pitch_offset_deg": 0.0}}')
+    print("  (x, y, z is the lens at yaw 0; the head's pivot is a few cm behind it, which matters little beyond ~1.5 m)")
     # the hole rectangle is 180-deg symmetric: holes matched the wrong way round fit just as well
     # and turn the camera upside down about its own axis
     if abs(roll) > 10:
@@ -217,9 +238,17 @@ def main():
 
     f = lambda M: "[" + ", ".join(f"{x:.6f}" for x in M.ravel()) + "]"  # noqa: E731
     with open(os.path.join(out, "camera_extrinsics.yaml"), "w") as fo:
-        fo.write(f"# M20 SIYI PTZ <-> front LiDAR, FAST-Calib {time.strftime('%Y-%m-%d %H:%M')}, scenes {names}\n")
+        fo.write(f"# M20 HIKMICRO PTZ <-> front LiDAR, FAST-Calib {time.strftime('%Y-%m-%d %H:%M')}, scenes {names}\n")
         fo.write("# Valid only at this gimbal angle and zoom. Row-major 4x4.\n")
-        fo.write(f"gimbal_attitude: {metas[0]['gimbal_attitude_median']}\nzoom_level: {metas[0]['zoom_level']}\n")
+        fo.write(f"gimbal_attitude: {metas[0]['gimbal_attitude_median']}   # Lumen: yaw + right, pitch + up\n"
+                 f"zoom_level: {metas[0]['zoom_level']}\n")
+        fo.write(f"camera_looking_deg: {{yaw_left: {yaw:.3f}, pitch_down: {pitch:.3f}, roll: {roll:.3f}}}   # in base_link\n")
+        fo.write(f"lumen_gimbal_zero_at_capture: {json.dumps(zero)}\n")
+        if fix:
+            fo.write(f"lumen_gimbal_zero_corrected: {{forward_azimuth: {fix['forward_azimuth']:.1f}, "
+                     f"level_elevation: {fix['level_elevation']:.1f}}}   # LUMEN_GIMBAL_FORWARD_AZIMUTH / LEVEL_ELEVATION\n")
+        fo.write(f"ptz_extrinsics: {{x: {T_bc[0, 3]:.4f}, y: {T_bc[1, 3]:.4f}, z: {T_bc[2, 3]:.4f}, yaw_sign: -1, "
+                 f"yaw_offset_deg: 0.0, pitch_offset_deg: 0.0}}   # orchestrator /ptz/extrinsics\n")
         fo.write(f"image_width: {cv2.imread(os.path.join(scenes[0], 'image.png')).shape[1]}\n")
         for k in ("fx", "fy", "cx", "cy", "k1", "k2", "p1", "p2"):
             fo.write(f"{k}: {get_yaml_value(ptext, k)}\n")

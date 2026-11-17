@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Capture calibration-target views from the SIYI stream for the camera intrinsics.
+"""Capture calibration-target views from the PTZ stream (HIKMICRO optical; m20_intrinsics_from_stereo.py is the better source) for the camera intrinsics.
 
 The target is the FAST-Calib board itself (its four ArUco markers, geometry from
 config/qr_params.yaml -- measure the board first), or a printed checkerboard (--cols/--rows).

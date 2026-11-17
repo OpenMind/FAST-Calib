@@ -1,0 +1,23 @@
+# RAW OUTPUT of scripts/m20_calib_run.py (session 2026-11-16, 5 scenes), kept for reference.
+# Use ptz_calibration.yaml: there the position is the gimbal pivot and the zero error is in the offsets;
+# the ptz_extrinsics / lumen_gimbal_zero_corrected lines below are the solver's first suggestion (lens position, offsets 0).
+# M20 HIKMICRO PTZ <-> front LiDAR, FAST-Calib 2026-11-16 16:44, scenes ['scene1', 'scene2', 'scene3', 'scene4', 'scene5']
+# Valid only at this gimbal angle and zoom. Row-major 4x4.
+gimbal_attitude: [0.0, -5.0, 0.0]   # Lumen: yaw + right, pitch + up
+zoom_level: 1.0
+camera_looking_deg: {yaw_left: -1.352, pitch_down: 6.604, roll: 1.057}   # in base_link
+lumen_gimbal_zero_at_capture: {"forward_azimuth": 0.0, "level_elevation": 0.0, "source": "lumen container (unset: 0)"}
+lumen_gimbal_zero_corrected: {forward_azimuth: 358.6, level_elevation: 1.6}   # LUMEN_GIMBAL_FORWARD_AZIMUTH / LEVEL_ELEVATION
+ptz_extrinsics: {x: 0.0455, y: 0.1202, z: 0.3286, yaw_sign: -1, yaw_offset_deg: 0.0, pitch_offset_deg: 0.0}   # orchestrator /ptz/extrinsics
+image_width: 2688
+fx: 2608.249456680415
+fy: 2610.547686398572
+cx: 1328.0235938002397
+cy: 754.2991367720632
+k1: -0.2395820887542283
+k2: 0.16960524676918456
+p1: -0.0007769978910483004
+p2: -0.00032595906940855563
+T_cam_lidar_front: [-0.018326, 0.999501, -0.025709, 0.119338, -0.993196, -0.021156, -0.114521, 0.305250, -0.115008, 0.023435, 0.993088, 0.314989, 0.000000, 0.000000, 0.000000, 1.000000]   # p_cam = T * p_lidar
+T_base_lidar_front: [-0.000000, -0.000000, 1.000000, 0.320280, 0.000000, -1.000000, -0.000000, 0.000000, 1.000000, 0.000000, 0.000000, -0.013000, 0.000000, 0.000000, 0.000000, 1.000000]   # from TF (tf)
+T_base_cam: [-0.025709, -0.114521, 0.993088, 0.045494, -0.999502, 0.021156, -0.023435, 0.120203, -0.018326, -0.993195, -0.115008, 0.328586, 0.000000, 0.000000, 0.000000, 1.000000]   # p_base = T * p_cam (camera optical frame: x right, y down, z forward)

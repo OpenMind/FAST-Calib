@@ -44,11 +44,16 @@ int main(int argc, char **argv)
     if (params.lidar_type == "solid") lidar_type = LiDARType::Solid;
     else if (params.lidar_type == "mech") lidar_type = LiDARType::Mech;
     else if (params.lidar_type == "grid") lidar_type = LiDARType::Grid;
+    else if (params.lidar_type == "pattern") lidar_type = LiDARType::Pattern;
 
     switch (lidar_type)
     {
         case LiDARType::Grid:
             lidarDetectPtr->detect_grid_lidar(cloud_input, lidar_center_cloud);
+            break;
+
+        case LiDARType::Pattern:
+            lidarDetectPtr->detect_pattern_lidar(cloud_input, lidar_center_cloud);
             break;
 
         case LiDARType::Solid:

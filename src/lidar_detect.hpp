@@ -333,13 +333,9 @@ public:
         }
     }
 
-    // 栅格占据法（移植自 m20-thor 分支的 detect_grid_lidar，并针对稀疏扫描线做了修改）：
-    // 板面点栅格化成 2D 占据图，闭运算桥接扫描线间隙，板轮廓（凸包）内的空洞即靶孔。
-    // 与扫描模式无关。改动：(1) 用凸包而不是从图像边界 flood fill 定义"板内"，板边被盲区或
-    // 稀疏扫描线切出缺口时洞仍算在板内；(2) 扫描线间隙会把洞撑大，面积上限放宽到 1.6 r；
-    // (3) 闭运算核从 7 px 起逐步加大，直到找到符合几何的 4 个洞。圆心最后用洞边缘一圈
-    // 真实板面点做最小二乘圆拟合，不受洞被撑大的影响。
-    void detect_grid_lidar(pcl::PointCloud<Common::Point>::Ptr cloud, pcl::PointCloud<pcl::PointXYZ>::Ptr center_cloud)
+    // The board plane: depth filter, RANSAC plane, and the plane's points rotated into z = 0
+    // (aligned_cloud_, x/y in metres in an arbitrary in-plane orientation). Shared by grid and pattern.
+    bool fit_board_plane(pcl::PointCloud<Common::Point>::Ptr cloud, Eigen::Matrix3d &R_align, double &average_z)
     {
         filtered_cloud_->reserve(cloud->size());
         pcl::PassThrough<Common::Point> pass;
@@ -365,8 +361,8 @@ public:
         RCLCPP_INFO(logger_, "Plane cloud size: %zu", plane_cloud_->size());
         if (plane_cloud_->size() < 100)
         {
-            RCLCPP_WARN(logger_, "[LiDAR/grid] Too few plane points, abort.");
-            return;
+            RCLCPP_WARN(logger_, "[LiDAR] Too few plane points, abort.");
+            return false;
         }
 
         Eigen::Vector3d normal(plane_coefficients->values[0], plane_coefficients->values[1], plane_coefficients->values[2]);
@@ -376,10 +372,10 @@ public:
         double angle = acos(normal.dot(z_axis));
         if (axis.norm() > 1e-9) axis.normalize();
         else axis = Eigen::Vector3d::UnitX();
-        Eigen::Matrix3d R_align = Eigen::AngleAxisd(angle, axis).toRotationMatrix();
+        R_align = Eigen::AngleAxisd(angle, axis).toRotationMatrix();
 
         aligned_cloud_->clear();
-        double average_z = 0.0;
+        average_z = 0.0;
         for (const auto &pt : *plane_cloud_)
         {
             Eigen::Vector3d p = R_align * Eigen::Vector3d(pt.x, pt.y, pt.z);
@@ -387,6 +383,195 @@ public:
             average_z += p.z();
         }
         average_z /= aligned_cloud_->size();
+        return true;
+    }
+
+    // Pattern method, for LiDARs whose scan lines cross the holes in odd ways (the M20's front LiDAR
+    // looks straight ahead: its lines are circles around its spin axis, and gaps between them, the empty
+    // disc at the axis and cut board edges all look like small holes to a hole-by-hole search).
+    // The 4 holes are fitted as one rigid pattern:
+    //  1. distance from every free cell inside the board's outline to the nearest LiDAR point: a hole is
+    //     ~9 cm empty around its centre, a gap between scan lines 2-3 cm;
+    //  2. the pattern (delta_width x delta_height rectangle) is slid and turned over the mean emptiness
+    //     of each hole's inner half, keeping the pose where the least empty of the 4 is emptiest;
+    //  3. each hole's centre is the centroid of its free region (> 2 cm from any point);
+    //  4. the rigid pattern (no scale) is fitted to those 4 centroids and its corners are the centres:
+    //     the centroids lean outward where scan lines are sparser, which a free fit reads as a bigger
+    //     (nearer) board; the rigid fit cancels it.
+    // Same as scripts/m20_scene_capture.py match_pattern.
+    void detect_pattern_lidar(pcl::PointCloud<Common::Point>::Ptr cloud, pcl::PointCloud<pcl::PointXYZ>::Ptr center_cloud)
+    {
+        Eigen::Matrix3d R_align;
+        double average_z;
+        if (!fit_board_plane(cloud, R_align, average_z)) return;
+
+        const double res = 0.005;
+        const int pad = static_cast<int>(0.3 / res);
+        double gx_min = 1e9, gx_max = -1e9, gy_min = 1e9, gy_max = -1e9;
+        for (const auto &pt : *aligned_cloud_)
+        {
+            gx_min = std::min<double>(gx_min, pt.x); gx_max = std::max<double>(gx_max, pt.x);
+            gy_min = std::min<double>(gy_min, pt.y); gy_max = std::max<double>(gy_max, pt.y);
+        }
+        const int W = static_cast<int>((gx_max - gx_min) / res) + 2 * pad;
+        const int H = static_cast<int>((gy_max - gy_min) / res) + 2 * pad;
+        if (W < 10 || H < 10 || W > 2000 || H > 2000)
+        {
+            RCLCPP_WARN(logger_, "[LiDAR/pattern] Board plane %.2f x %.2f m: not a board, abort.", gx_max - gx_min, gy_max - gy_min);
+            return;
+        }
+        cv::Mat occ = cv::Mat::zeros(H, W, CV_8UC1);
+        for (const auto &pt : *aligned_cloud_)
+            occ.at<uint8_t>(static_cast<int>((pt.y - gy_min) / res) + pad, static_cast<int>((pt.x - gx_min) / res) + pad) = 255;
+        cv::Mat closed;
+        cv::morphologyEx(occ, closed, cv::MORPH_CLOSE, cv::Mat::ones(15, 15, CV_8UC1));
+        std::vector<cv::Point> pts, hull_pts;
+        cv::findNonZero(closed, pts);
+        cv::convexHull(pts, hull_pts);
+        cv::Mat hull = cv::Mat::zeros(H, W, CV_8UC1);
+        cv::fillConvexPoly(hull, hull_pts, cv::Scalar(255));
+        cv::Mat free_ = (occ == 0) & (hull == 255);      // outside the board counts as occupied
+        cv::Mat dist, D;
+        cv::distanceTransform(free_, dist, cv::DIST_L2, 5);   // px to the nearest point
+        const int rr = static_cast<int>(0.5 * circle_radius_ / res);
+        cv::Mat k;
+        cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(2 * rr + 1, 2 * rr + 1)).convertTo(k, CV_32F);
+        k /= cv::sum(k)[0];
+        cv::filter2D(dist, D, CV_32F, k, cv::Point(-1, -1), 0, cv::BORDER_CONSTANT);
+        // board all round a hole: share of a ring 2-7 cm outside its edge within 4 cm of a point. Empty
+        // space beside the board (inside its outline because a hand or a stand is in the plane) is not a hole.
+        const double RIM_MIN = 0.7;
+        const int ro = static_cast<int>((circle_radius_ + 0.07) / res), ri = static_cast<int>((circle_radius_ + 0.02) / res);
+        cv::Mat ring_k = cv::Mat::zeros(2 * ro + 1, 2 * ro + 1, CV_32F);
+        cv::circle(ring_k, cv::Point(ro, ro), ro, cv::Scalar(1.0), -1);
+        cv::circle(ring_k, cv::Point(ro, ro), ri, cv::Scalar(0.0), -1);
+        ring_k /= cv::sum(ring_k)[0];
+        cv::Mat near_, A, gate, Dg;
+        cv::Mat((dist * res < 0.04) & (hull == 255)).convertTo(near_, CV_32F, 1.0 / 255);   // half a scan-line gap is up to ~3 cm
+        cv::filter2D(near_, A, CV_32F, ring_k, cv::Point(-1, -1), 0, cv::BORDER_CONSTANT);
+        cv::min(cv::max((A - (RIM_MIN - 0.1)) / 0.1, 0.0), 1.0, gate);   // searched on: full from RIM_MIN, none 0.1 below
+        Dg = D.mul(gate);
+
+        const double hw = delta_width_circles_ / 2, hh = delta_height_circles_ / 2;
+        const Eigen::Vector2d T[4] = {{-hw, -hh}, {hw, -hh}, {hw, hh}, {-hw, hh}};
+        double best = -1;
+        cv::Point best_px[4];
+        for (double th_deg = 0; th_deg < 180; th_deg += 0.5)   // the pattern is 180-deg symmetric
+        {
+            const double c = std::cos(th_deg * M_PI / 180), sn = std::sin(th_deg * M_PI / 180);
+            cv::Point o[4];
+            int minx = 0, maxx = 0, miny = 0, maxy = 0;
+            for (int i = 0; i < 4; ++i)
+            {
+                o[i] = cv::Point(static_cast<int>(std::lround((c * T[i].x() - sn * T[i].y()) / res)),
+                                 static_cast<int>(std::lround((sn * T[i].x() + c * T[i].y()) / res)));
+                minx = std::min(minx, o[i].x); maxx = std::max(maxx, o[i].x);
+                miny = std::min(miny, o[i].y); maxy = std::max(maxy, o[i].y);
+            }
+            const int x0 = -minx, x1 = W - maxx, y0 = -miny, y1 = H - maxy;
+            if (x1 <= x0 || y1 <= y0) continue;
+            cv::Mat S = Dg(cv::Rect(x0 + o[0].x, y0 + o[0].y, x1 - x0, y1 - y0)).clone();
+            for (int i = 1; i < 4; ++i)
+                cv::min(S, Dg(cv::Rect(x0 + o[i].x, y0 + o[i].y, x1 - x0, y1 - y0)), S);
+            double mx;
+            cv::Point loc;
+            cv::minMaxLoc(S, nullptr, &mx, nullptr, &loc);
+            if (mx > best)
+            {
+                best = mx;
+                for (int i = 0; i < 4; ++i) best_px[i] = cv::Point(loc.x + x0 + o[i].x, loc.y + y0 + o[i].y);
+            }
+        }
+        if (best < 0)
+        {
+            RCLCPP_WARN(logger_, "[LiDAR/pattern] The hole pattern does not fit on the board plane.");
+            return;
+        }
+
+        // each hole: centroid of its free region (> 2 cm from any point), the component nearest the coarse centre
+        const int r_px = static_cast<int>(circle_radius_ / res);
+        const float t_px = static_cast<float>(0.02 / res);
+        Eigen::Vector2d obs[4];
+        double empt_min = 1e9, rim_min = 1e9;
+        for (int i = 0; i < 4; ++i)
+        {
+            const cv::Point p = best_px[i];
+            empt_min = std::min<double>(empt_min, D.at<float>(p) * res);
+            rim_min = std::min<double>(rim_min, A.at<float>(p));
+            const cv::Rect roi = cv::Rect(p.x - r_px - 4, p.y - r_px - 4, 2 * r_px + 9, 2 * r_px + 9) & cv::Rect(0, 0, W, H);
+            cv::Mat m = cv::Mat::zeros(roi.size(), CV_8UC1);
+            for (int y = 0; y < roi.height; ++y)
+                for (int x = 0; x < roi.width; ++x)
+                {
+                    const int gx = x + roi.x, gy = y + roi.y;
+                    if (dist.at<float>(gy, gx) > t_px && (gx - p.x) * (gx - p.x) + (gy - p.y) * (gy - p.y) <= (r_px + 4) * (r_px + 4))
+                        m.at<uint8_t>(y, x) = 1;
+                }
+            cv::Mat lab, stats, cents;
+            const int n = cv::connectedComponentsWithStats(m, lab, stats, cents, 8, CV_32S);
+            double cx = p.x, cy = p.y, dbest = 1e18;
+            for (int j = 1; j < n; ++j)
+            {
+                double d = 1e18;
+                for (int y = 0; y < lab.rows; ++y)
+                    for (int x = 0; x < lab.cols; ++x)
+                        if (lab.at<int>(y, x) == j)
+                            d = std::min<double>(d, std::pow(x + roi.x - p.x, 2) + std::pow(y + roi.y - p.y, 2));
+                if (d < dbest) { dbest = d; cx = cents.at<double>(j, 0) + roi.x; cy = cents.at<double>(j, 1) + roi.y; }
+            }
+            obs[i] = Eigen::Vector2d((cx - pad) * res + gx_min, (cy - pad) * res + gy_min);
+        }
+
+        // rigid 2-D fit (rotation + translation, no scale) of the pattern to the centroids
+        Eigen::Vector2d mo = Eigen::Vector2d::Zero(), mt = Eigen::Vector2d::Zero();
+        for (int i = 0; i < 4; ++i) { mo += obs[i] / 4; mt += T[i] / 4; }
+        Eigen::Matrix2d Hm = Eigen::Matrix2d::Zero();
+        for (int i = 0; i < 4; ++i) Hm += (T[i] - mt) * (obs[i] - mo).transpose();
+        Eigen::JacobiSVD<Eigen::Matrix2d> svd(Hm, Eigen::ComputeFullU | Eigen::ComputeFullV);
+        Eigen::Matrix2d R2 = svd.matrixV() * svd.matrixU().transpose();
+        if (R2.determinant() < 0)
+        {
+            Eigen::Matrix2d V = svd.matrixV();
+            V.col(1) *= -1;
+            R2 = V * svd.matrixU().transpose();
+        }
+        double resid_max = 0;
+        Eigen::Vector2d fit[4];
+        for (int i = 0; i < 4; ++i)
+        {
+            fit[i] = R2 * (T[i] - mt) + mo;
+            resid_max = std::max(resid_max, (fit[i] - obs[i]).norm());
+        }
+        RCLCPP_INFO(logger_, "[LiDAR/pattern] 4 holes: least empty %.3f m of free space, least board round one %.0f %%, "
+                    "centroids within %.3f m of the rigid pattern.", empt_min, rim_min * 100, resid_max);
+        if (empt_min < 0.5 * circle_radius_ || rim_min < RIM_MIN || resid_max > 0.04)
+        {
+            RCLCPP_WARN(logger_, "[LiDAR/pattern] Not 4 clear holes (need >= %.3f m free, >= %.0f %% board round each, "
+                        "<= 0.040 m from the pattern): unable to find a candidate set that matches target's geometry",
+                        0.5 * circle_radius_, RIM_MIN * 100);
+            return;
+        }
+        center_z0_cloud_->clear();
+        const Eigen::Matrix3d R_inv = R_align.inverse();
+        for (int i = 0; i < 4; ++i)
+        {
+            center_z0_cloud_->push_back(pcl::PointXYZ(fit[i].x(), fit[i].y(), 0));
+            const Eigen::Vector3d p = R_inv * Eigen::Vector3d(fit[i].x(), fit[i].y(), average_z);
+            center_cloud->points.push_back(pcl::PointXYZ(p.x(), p.y(), p.z()));
+        }
+    }
+
+    // 栅格占据法（移植自 m20-thor 分支的 detect_grid_lidar，并针对稀疏扫描线做了修改）：
+    // 板面点栅格化成 2D 占据图，闭运算桥接扫描线间隙，板轮廓（凸包）内的空洞即靶孔。
+    // 与扫描模式无关。改动：(1) 用凸包而不是从图像边界 flood fill 定义"板内"，板边被盲区或
+    // 稀疏扫描线切出缺口时洞仍算在板内；(2) 扫描线间隙会把洞撑大，面积上限放宽到 1.6 r；
+    // (3) 闭运算核从 7 px 起逐步加大，直到找到符合几何的 4 个洞。圆心最后用洞边缘一圈
+    // 真实板面点做最小二乘圆拟合，不受洞被撑大的影响。
+    void detect_grid_lidar(pcl::PointCloud<Common::Point>::Ptr cloud, pcl::PointCloud<pcl::PointXYZ>::Ptr center_cloud)
+    {
+        Eigen::Matrix3d R_align;
+        double average_z;
+        if (!fit_board_plane(cloud, R_align, average_z)) return;
 
         const float res = 0.01f;
         float gx_min = std::numeric_limits<float>::max(), gx_max = std::numeric_limits<float>::lowest();

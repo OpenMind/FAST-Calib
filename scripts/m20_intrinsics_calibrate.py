@@ -22,7 +22,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from m20_common import BOARD_IDS, QR_PARAMS, board_points, set_yaml_values  # noqa: E402
+from m20_common import BOARD_IDS, HFOV_1X, QR_PARAMS, board_points, set_yaml_values  # noqa: E402
 
 
 def main():
@@ -96,7 +96,7 @@ def main():
     if abs(cx - size[0] / 2) > 0.05 * size[0] or abs(cy - size[1] / 2) > 0.05 * size[1]:
         warn.append("principal point is far from the centre")
     if g.mean() < 0.75: warn.append("corners do not reach the picture's edges/corners: capture more views there")
-    if not 70 < hfov < 95: warn.append(f"HFOV {hfov:.0f} deg is not the ~81 deg of zoom 1x: is the zoom at 1x?")
+    if abs(hfov - HFOV_1X) > 3: warn.append(f"HFOV {hfov:.1f} deg is not the ~{HFOV_1X} deg of zoom 1x: is the zoom at 1x?")
     # error against distance from the image centre: growing outwards = the distortion model is off
     rad, err = [], []
     for j, i in enumerate(keep):
@@ -139,7 +139,7 @@ def main():
 
     out = os.path.join(a.dir, "intrinsics.yaml")
     with open(out, "w") as f:
-        f.write(f"# SIYI A8 mini, zoom 1x, {size[0]}x{size[1]} main stream; FAST-Calib model (k3 = 0)\n")
+        f.write(f"# HIKMICRO HM-TD5767T-7 optical, zoom 1x, {size[0]}x{size[1]} main stream; FAST-Calib model (k3 = 0)\n")
         f.write(f"image_width: {size[0]}\nimage_height: {size[1]}\n")
         for k, v in dict(fx=fx, fy=fy, cx=cx, cy=cy, k1=k1, k2=k2, p1=p1, p2=p2).items():
             f.write(f"{k}: {v:.6f}\n")

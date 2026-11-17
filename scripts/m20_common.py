@@ -1,15 +1,26 @@
-"""Shared pieces of the M20 calibration scripts: the SIYI stream, the LiDAR mount, YAML."""
+"""Shared pieces of the M20 calibration scripts: the PTZ stream and gimbal, the LiDAR mount, YAML.
+
+The PTZ camera is the HIKMICRO HM-TD5767T-7 dual-spectrum head. Its optical stream comes through the
+robot's relay (om1_video_processor), and its gimbal is driven through Lumen's HTTP API, which owns the
+camera's ISAPI connection and credentials: these scripts never talk to the camera directly.
+"""
+import json
 import os
 import re
+import subprocess
 import threading
 import time
+import urllib.request
+from collections import deque
 
 os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay")
 import cv2
 import numpy as np
 
-RTSP_URL = "rtsp://10.21.31.90:8554/main.264"
-STREAM_SIZE = (1920, 1080)
+RTSP_URL = "rtsp://127.0.0.1:8554/ptz_camera"   # the relay of the HIKMICRO optical main stream
+STREAM_SIZE = (2688, 1520)
+LUMEN_URL = "http://127.0.0.1:8999"              # Lumen: GET /v1/ptz/status, POST /v1/ptz/angle, /v1/ptz/zoom
+HFOV_1X = 54.5  # deg, the optical lens at zoom 1x (fx 2608 px on 2688 px, the optical-thermal calibration)
 LIDAR_TOPIC = "/lidar_points_front"
 LIDAR_FRAME = "lidar_front"
 # base_link <- lidar_front from the M20's TF (used when /tf_static cannot be read)
@@ -58,6 +69,79 @@ class Stream:
     def close(self):
         self.alive = False
         self.thread.join(timeout=3.0)
+
+
+class LumenGimbal:
+    """The PTZ head through Lumen. Yaw 0 = robot front, + = right; pitch 0 = level, + = up; zoom in x.
+
+    A thread polls the status a few times a second, so `gimbal(s)` gives the recent history like the
+    ROS attitude topic of the SIYI driver did."""
+
+    def __init__(self, url=LUMEN_URL, poll_s=0.2):
+        self.url = url.rstrip("/")
+        self.att = deque(maxlen=300)      # (monotonic time, yaw, pitch)
+        self.zoom = None
+        self.error = None
+        self.alive = True
+        self.poll_s = poll_s
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _call(self, path, body=None, timeout=5.0):
+        req = urllib.request.Request(self.url + path, method="POST" if body is not None else "GET",
+                                     data=None if body is None else json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read() or b"{}")
+
+    def status(self):
+        """{yaw, pitch, roll, zoom} now."""
+        return self._call("/v1/ptz/status")
+
+    def _run(self):
+        while self.alive:
+            try:
+                st = self.status()
+                self.att.append((time.monotonic(), float(st["yaw"]), float(st["pitch"])))
+                self.zoom, self.error = float(st["zoom"]), None
+            except Exception as e:  # noqa: BLE001 - shown by the callers' checks
+                self.error = str(e)
+            time.sleep(self.poll_s)
+
+    def gimbal(self, s):
+        """(yaw, pitch) rows of the last s seconds, or None."""
+        now = time.monotonic()
+        a = np.array([(y, p) for t, y, p in list(self.att) if t > now - s])
+        return a if len(a) else None
+
+    def set(self, yaw, pitch, zoom=1.0):
+        self._call("/v1/ptz/zoom", {"level": float(zoom)})
+        return self._call("/v1/ptz/angle", {"yaw": float(yaw), "pitch": float(pitch)})
+
+    def close(self):
+        self.alive = False
+
+
+def lumen_gimbal_zero():
+    """Lumen's current LUMEN_GIMBAL_FORWARD_AZIMUTH / LEVEL_ELEVATION (the camera azimuth and elevation
+    it calls yaw 0 / pitch 0), from the container's environment; 0 when unset or unreadable.
+    Only these two variables are read: the container's environment also holds credentials."""
+    zero = {"forward_azimuth": 0.0, "level_elevation": 0.0, "source": "default"}
+    try:
+        env = subprocess.run(["docker", "inspect", "lumen", "--format", "{{range .Config.Env}}{{println .}}{{end}}"],
+                             capture_output=True, text=True, timeout=5).stdout.splitlines()
+    except Exception:  # noqa: BLE001
+        return zero
+    for line in env:
+        for key in ("FORWARD_AZIMUTH", "LEVEL_ELEVATION"):
+            if line.startswith(f"LUMEN_GIMBAL_{key}="):
+                try:
+                    zero[key.lower()] = float(line.split("=", 1)[1])
+                    zero["source"] = "lumen container"
+                except ValueError:
+                    pass
+    if env and zero["source"] == "default":
+        zero["source"] = "lumen container (unset: 0)"
+    return zero
 
 
 def quat_to_R(q):

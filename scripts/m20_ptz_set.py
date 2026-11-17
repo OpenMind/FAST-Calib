@@ -1,62 +1,48 @@
 #!/usr/bin/env python3
-"""Set the SIYI gimbal to an angle, always approaching from the same side.
+"""Point the M20's HIKMICRO PTZ head through Lumen, always approaching from the same side.
 
-The gimbal stops within about a degree of the target on whichever side it came from:
-yaw 70 reached from 30 and from 110 differ by 1.1 deg in the picture. From the same side
-it returns to within 0.15 deg. So this goes to (yaw - 10, pitch - 5) first, then to the target,
-and reports where it settled. Use it for calibration and for patrols alike.
+Yaw 0 = the robot's front (+ = right), pitch 0 = level (+ = up), as Lumen defines them
+(LUMEN_GIMBAL_FORWARD_AZIMUTH / LEVEL_ELEVATION). The camera-LiDAR calibration is made looking
+straight ahead at zoom 1x, which is the default:
 
-    python3 scripts/m20_ptz_set.py 70 0          # yaw 70 (right), pitch 0, zoom 1x
+    python3 scripts/m20_ptz_set.py                 # yaw 0, pitch 0, zoom 1x
+    python3 scripts/m20_ptz_set.py 0 0 --zoom 1
+
+Nothing else may move the head meanwhile: no patrol and no gauge read running.
 """
 import argparse
+import os
+import sys
 import time
 
-import rclpy
-from geometry_msgs.msg import Vector3
-from rclpy.node import Node
-from std_msgs.msg import Float32
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from m20_common import LUMEN_URL, LumenGimbal  # noqa: E402
 
-PRE_YAW, PRE_PITCH = 10.0, 5.0  # approach from below on both axes
+PRE_YAW, PRE_PITCH = 5.0, 3.0  # approach from below-left on both axes, so backlash is always taken up the same way
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("yaw", type=float, help="degrees, + = right")
-    ap.add_argument("pitch", type=float, help="degrees, + = up")
+    ap.add_argument("yaw", type=float, nargs="?", default=0.0, help="degrees, + = right")
+    ap.add_argument("pitch", type=float, nargs="?", default=0.0, help="degrees, + = up")
     ap.add_argument("--zoom", type=float, default=1.0, help="zoom magnification (1 = widest)")
-    ap.add_argument("--ns", default="/zr10")
+    ap.add_argument("--lumen", default=LUMEN_URL)
     a = ap.parse_args()
 
-    rclpy.init()
-    n = Node("m20_ptz_set")
-    angle = n.create_publisher(Vector3, f"{a.ns}/gimbal/angle", 10)
-    zoom = n.create_publisher(Float32, f"{a.ns}/gimbal/zoom", 10)
-    att, zl = [], []
-    n.create_subscription(Vector3, f"{a.ns}/gimbal/attitude", lambda m: att.append((m.x, m.y)), 10)
-    n.create_subscription(Float32, f"{a.ns}/gimbal/zoom_level", lambda m: zl.append(m.data), 10)
-
-    def spin(s):
-        t0 = time.time()
-        while time.time() - t0 < s:
-            rclpy.spin_once(n, timeout_sec=0.05)
-
-    def send(y, p, wait):
-        for _ in range(3):
-            angle.publish(Vector3(x=float(y), y=float(p), z=0.0))
-            spin(0.1)
-        spin(wait)
-
-    spin(0.5)
-    zoom.publish(Float32(data=a.zoom))
-    send(a.yaw - PRE_YAW, a.pitch - PRE_PITCH, 3.0)
-    send(a.yaw, a.pitch, 4.0)
-    if att:
-        y, p = att[-1]
-        print(f"set yaw {a.yaw:.1f} pitch {a.pitch:.1f}: gimbal reports yaw {y:.1f} pitch {p:.1f}, "
-              f"zoom_level {zl[-1] if zl else '?'} (10.0 = 1x)")
-    else:
-        print("no /gimbal/attitude: is the gimbal driver running?")
-    rclpy.shutdown()
+    g = LumenGimbal(a.lumen)
+    try:
+        g.set(a.yaw - PRE_YAW, a.pitch - PRE_PITCH, a.zoom)
+        time.sleep(2.0)
+        g.set(a.yaw, a.pitch, a.zoom)
+        time.sleep(3.0)
+        st = g.status()
+    except Exception as e:  # noqa: BLE001
+        sys.exit(f"Lumen did not move the head ({e}): is the lumen container running, and no patrol or gauge read busy?")
+    finally:
+        g.close()
+    off = max(abs(st["yaw"] - a.yaw), abs(st["pitch"] - a.pitch))
+    print(f"set yaw {a.yaw:.1f} pitch {a.pitch:.1f} zoom {a.zoom:g}: head reports yaw {st['yaw']:.1f} "
+          f"pitch {st['pitch']:.1f} zoom {st['zoom']:g}" + ("" if off < 0.5 else "   WARNING: not there yet"))
 
 
 if __name__ == "__main__":
