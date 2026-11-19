@@ -5,8 +5,8 @@ the camera's **intrinsics** (K and distortion at 1920×1080) and its **mount** o
 yaw / pitch / roll in `base_link`, plus `T_cam_lidar`). It takes about 40 minutes with one person moving the
 board and the robot standing still.
 
-**Status (2026-11-19):** the tooling is ready and tested on the robot (live camera, live LiDAR, the solve).
-The calibration itself has **not been done yet**; its results go in this folder (step 5).
+**Status:** calibrated 2026-11-19 on one M20; the results are in this folder and in step 5. Whether other
+M20s' acoustic camera mounts match has not been checked.
 
 ## 1. How it works
 
@@ -100,10 +100,12 @@ python3 scripts/m20_intrinsics_calibrate.py calib_data/intrinsics_acoustic      
 python3 scripts/m20_intrinsics_calibrate.py calib_data/intrinsics_acoustic --write    # into config/acoustic_params.yaml
 ```
 
-Good: RMS < 0.5 px, no WARNING lines, fx ≈ fy within 1 %, corners cover ≥ 75 % of the picture, marker
-spacing measured/nominal within 2 %. `undistorted.jpg` (left raw, right undistorted): straight edges look
-straight. The horizontal view should come out near the camera's nominal 50° (fx ≈ 2060 px); a value far
-off means a problem. If it fails, add views where the report says (edges or corners) and solve again.
+Good: RMS < 0.5 px, corners cover ≥ 75 % of the picture, marker spacing measured/nominal within 2 %.
+`undistorted.jpg` (left raw, right undistorted): straight edges look straight. This camera's pixels are not
+square: its 4:3 picture is stretched to 1920×1080 (the board's round holes look wide), so fy ≈ 0.75·fx and
+the "fx and fy differ" WARNING is expected. Expect a horizontal view near 64° (fx ≈ 1535 px) and a vertical
+one near 50° (fy ≈ 1150 px); a value far off means a problem. If it fails, add views where the report says
+(edges or corners) and solve again.
 
 `--write` replaces the seed values in `config/acoustic_params.yaml` (old copy in `.bak`). The next step
 refuses to start until it has run.
@@ -180,9 +182,19 @@ depend on the picture size.
 
 | Result | Value |
 |---|---|
-| Intrinsics 1920×1080 (fx, fy, cx, cy; k1, k2, p1, p2) | _to fill_ |
-| Mount in `base_link` (x, y, z m; yaw, pitch, roll deg) | _to fill_ |
-| Joint RMSE; scene agreement | _to fill_ |
+| Intrinsics 1920×1080 (fx, fy, cx, cy; k1, k2, p1, p2) | 1535.27, 1150.66, 1026.93, 536.09; 0.00228, −0.07415, 0.00255, 0.00040 (RMS 1.04 px, 44 views) |
+| Intrinsics for Lumen's 1344×756 picture (fx, fy, cx, cy) | 1074.69, 805.46, 718.70, 375.11 |
+| Mount in `base_link` (x, y, z m; yaw_left, pitch_down, roll deg) | 0.210, 0.001, 0.129; −0.52, −1.53, +0.75 |
+| Joint RMSE; scene agreement | 1.32 cm over scenes 1, 2, 3, 5, 6; each within 0.5–1.7° and 2.4–8.3 cm |
+
+Notes on this run:
+- Intrinsics RMS is 1.0 px, above the 0.5 px aim, but the fit is stable: without the views nearer than
+  1.8 m it gives fx, fy within 0.2 % and cx, cy within 3 px.
+- Scene 4 is not in the solve: the first recording disagreed by 4.3° and the redo failed the LiDAR hole
+  check (someone stood behind the board). Scene 5 agrees within 8.3 cm, a little over the 7 cm guide; it too
+  was recorded with someone behind the board.
+- An earlier six-scene run on the same day (scenes 2, 4 and 6 redone after it) gave a mount within 1.6 cm and
+  0.5° of this one.
 
 ## 6. Files
 
