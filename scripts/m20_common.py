@@ -71,6 +71,103 @@ class Stream:
         self.thread.join(timeout=3.0)
 
 
+# ---- the CRYSOUND acoustic camera: a fixed camera, its clean picture from the REST API ----
+ACOUSTIC_URL = os.environ.get("ACOUSTIC_CAM_URL")   # http://<camera-ip>:9999, the camera's REST API
+ACOUSTIC_SIZE = (1920, 1080)
+ACOUSTIC_PARAMS = os.path.join(REPO, "config", "acoustic_params.yaml")
+
+
+class AcousticStream:
+    """Latest clean frame of the CRYSOUND acoustic camera (GET /api/image/v1/imrData, cameraImageData).
+
+    Not the RTSP video: that one carries the sound cloud, dB label and focus box drawn into the picture.
+    About 3 frames a second. Address from ACOUSTIC_CAM_URL (http://<camera-ip>:9999), credentials from
+    ACOUSTIC_CAM_USER (default admin) and ACOUSTIC_CAM_PASSWORD."""
+
+    def __init__(self, url=ACOUSTIC_URL, user=None, password=None):
+        if not url:
+            raise RuntimeError("set ACOUSTIC_CAM_URL=http://<camera-ip>:9999 (or pass --url)")
+        self.url = url.rstrip("/")
+        self.user = user or os.environ.get("ACOUSTIC_CAM_USER", "admin")
+        self.password = password or os.environ.get("ACOUSTIC_CAM_PASSWORD")
+        if not self.password:
+            raise RuntimeError("set ACOUSTIC_CAM_PASSWORD (the acoustic camera's web password)")
+        self.cookie = None
+        self.frame, self.count, self.error = None, 0, None
+        self.lock = threading.Lock()
+        self.alive = True
+        self._login()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def _login(self):
+        import urllib.parse
+        body = urllib.parse.urlencode({"user": self.user, "password": self.password}).encode()
+        with urllib.request.urlopen(urllib.request.Request(self.url + "/api/register/v1/login", data=body), timeout=5) as r:
+            j = json.loads(r.read())
+        if j.get("result") != 0:
+            raise RuntimeError(f"acoustic camera login failed: {j.get('info')}")
+        self.cookie = j["data"]["cookie"].split(";")[0]
+
+    def _grab(self):
+        import base64
+        req = urllib.request.Request(self.url + "/api/image/v1/imrData", method="GET",
+                                     data=json.dumps({"cameraImage": True, "compositeImage": False}).encode(),
+                                     headers={"Content-Type": "application/json", "CRY-Cookie": self.cookie})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            j = json.loads(r.read())
+        b64 = j["data"]["pictureData"]["cameraImageData"].split(",", 1)[-1]
+        return cv2.imdecode(np.frombuffer(base64.b64decode(b64), np.uint8), cv2.IMREAD_COLOR)
+
+    def _run(self):
+        while self.alive:
+            try:
+                f = self._grab()
+                with self.lock:
+                    self.frame, self.count, self.error = f, self.count + 1, None
+            except Exception as e:  # noqa: BLE001 - session expired (401) or a dropped request: log in again
+                self.error = str(e)
+                time.sleep(0.5)
+                try:
+                    self._login()
+                except Exception:  # noqa: BLE001
+                    time.sleep(1.0)
+
+    def read(self, after=0, timeout=10.0):
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < timeout:
+            with self.lock:
+                if self.frame is not None and self.count > after:
+                    return self.frame.copy(), self.count
+            time.sleep(0.01)
+        raise RuntimeError(f"no frame from the acoustic camera ({self.error})")
+
+    def close(self):
+        self.alive = False
+
+
+class FixedMount:
+    """Stands in for the gimbal of a camera without one: always at yaw 0, pitch 0, zoom 1."""
+    zoom, error = 1.0, None
+
+    def gimbal(self, s):
+        return np.zeros((1, 2))
+
+    def close(self):
+        pass
+
+
+CAMERAS = {  # --camera: stream, picture size, default params file
+    "ptz": dict(size=(2688, 1520), params=QR_PARAMS, url=RTSP_URL),
+    "acoustic": dict(size=ACOUSTIC_SIZE, params=ACOUSTIC_PARAMS, url=ACOUSTIC_URL),
+}
+
+
+def open_camera(camera, url=None):
+    url = url or CAMERAS[camera]["url"]
+    return AcousticStream(url) if camera == "acoustic" else Stream(url)
+
+
 class LumenGimbal:
     """The PTZ head through Lumen. Yaw 0 = robot front, + = right; pitch 0 = level, + = up; zoom in x.
 

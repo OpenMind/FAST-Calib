@@ -1,0 +1,31 @@
+/**:
+  ros__parameters:
+    # CRYSOUND acoustic camera (fixed), 1920x1080 clean frame from its REST API.
+    # Camera intrinsics: written by scripts/m20_intrinsics_calibrate.py --camera acoustic --write
+    # INTRINSICS NOT CALIBRATED: seed from the camera's 50 deg field of view, no distortion
+      fx: 2058.7
+      fy: 2058.7
+      cx: 960.0
+      cy: 540.0
+      k1: 0.0
+      k2: 0.0
+      p1: 0.0
+      p2: 0.0
+
+    # Calibration target parameters (the same FAST-Calib board as the PTZ calibration)
+      marker_size: 0.20
+      delta_width_qr_center: 0.55
+      delta_height_qr_center: 0.35
+      delta_width_circles: 0.5
+      delta_height_circles: 0.4
+      circle_radius: 0.12
+
+    # Distance filter (each scene's own values are written by the guide)
+      x_min: 2.0
+      x_max: 5.0
+      y_min: -1.0
+      y_max: 4.0
+      z_min: 0.0
+      z_max: 2.0
+
+      lidar_topic: "/lidar_points_front"

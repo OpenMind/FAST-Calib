@@ -10,6 +10,8 @@ For each of the three scenes the page says where the board should be and shows, 
 the camera and the LiDAR see of it. When every check has passed for 3 s it records the scene
 by itself (5 s, keep still). After the third scene it runs the calibration and shows the result.
 A session already started (same --session) carries on from its next scene.
+
+The fixed CRYSOUND acoustic camera: --camera acoustic (calibration/m20_acoustic/README.md).
 """
 import argparse
 import collections
@@ -32,7 +34,7 @@ from rclpy.serialization import deserialize_message
 from sensor_msgs.msg import Imu, PointCloud2
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from m20_common import (LIDAR_TOPIC, LUMEN_URL, QR_PARAMS, REPO, RTSP_URL, LumenGimbal, Stream,  # noqa: E402
+from m20_common import (CAMERAS, LIDAR_TOPIC, LUMEN_URL, REPO, FixedMount, LumenGimbal, open_camera,  # noqa: E402
                         board_marker_corners, lumen_gimbal_zero, board_points, get_yaml_value, lookup_base_lidar,
                         pointcloud2_xyz_ring, set_yaml_values)
 from m20_calib_run import run_node  # noqa: E402
@@ -221,7 +223,7 @@ class Guide:
     def board_still(self, s=1.5):
         now = time.monotonic()
         ts = np.array([t for tt, t in self.board_hist if tt > now - s])
-        return len(ts) > 5 and np.ptp(ts, axis=0).max() < 0.02
+        return len(ts) >= 3 and np.ptp(ts, axis=0).max() < 0.02   # >= 3 frames: the acoustic camera gives ~3/s
 
     # ---- LiDAR side: the board plane and its holes, a few times a second
     def lidar_check(self, T_bl, clouds):
@@ -318,9 +320,10 @@ class Guide:
                     output_path=os.path.abspath(os.path.join(out, "out")), lidar_topic=self.a.topic, plane_dist_threshold=0.02,
                     lidar_type="pattern")
         open(os.path.join(out, "params.yaml"), "w").write(set_yaml_values(self.ptext, vals))
-        gimbal = [float(np.median(att[:, 0])), float(np.median(att[:, 1])), 0.0] if att is not None else None
-        json.dump(dict(time=time.strftime("%Y-%m-%d %H:%M:%S"), gimbal_attitude_median=gimbal,
-                       gimbal_convention="lumen: yaw + right, pitch + up, zoom x", lumen_gimbal_zero=lumen_gimbal_zero(),
+        ptz = self.a.camera == "ptz"
+        gimbal = [float(np.median(att[:, 0])), float(np.median(att[:, 1])), 0.0] if att is not None and ptz else None
+        json.dump(dict(time=time.strftime("%Y-%m-%d %H:%M:%S"), camera=self.a.camera, gimbal_attitude_median=gimbal,
+                       gimbal_convention="lumen: yaw + right, pitch + up, zoom x", lumen_gimbal_zero=lumen_gimbal_zero() if ptz else None,
                        zoom_level=zoom, base_T_lidar=T_bl.tolist(), base_T_lidar_source=src, ground_z_base=float(ground),
                        board_angle=self.angle, board_dist=self.dist, clouds=len(raw),
                        problems=[m for ok, m in checks if not ok]), open(os.path.join(out, "meta.json"), "w"), indent=1)
@@ -382,26 +385,29 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--yaw", type=float, default=0.0, help="gimbal yaw, + = right (set it with m20_ptz_set.py)")
     ap.add_argument("--pitch", type=float, default=0.0)
-    ap.add_argument("--session", default=os.path.join(REPO, "calib_data", "m20_" + time.strftime("%Y%m%d")))
-    ap.add_argument("--params", default=QR_PARAMS)
+    ap.add_argument("--camera", choices=sorted(CAMERAS), default="ptz", help="ptz (HIKMICRO, gimbal via Lumen) or acoustic (CRYSOUND, fixed)")
+    ap.add_argument("--session", help="default calib_data/m20_YYYYMMDD (ptz) or calib_data/m20_acoustic_YYYYMMDD")
+    ap.add_argument("--params", help="default: the camera's params file (config/qr_params.yaml or config/acoustic_params.yaml)")
     ap.add_argument("--topic", default=LIDAR_TOPIC)
     ap.add_argument("--lumen", default=LUMEN_URL, help="Lumen, which drives the PTZ head")
-    ap.add_argument("--url", default=RTSP_URL)
+    ap.add_argument("--url", help="camera stream (default: the camera's)")
     ap.add_argument("--duration", type=float, default=5.0)
     ap.add_argument("--port", type=int, default=8098)
     ap.add_argument("--box", type=float, nargs=6, default=[1.2, 4.0, -1.6, 1.6, 0.05, 2.5],
                     help="where to look for the board, base_link metres x0 x1 y0 y1 z0 z1 (z above the ground)")
     a = ap.parse_args()
+    a.params = a.params or CAMERAS[a.camera]["params"]
+    a.session = a.session or os.path.join(REPO, "calib_data", "m20_" + ("" if a.camera == "ptz" else a.camera + "_") + time.strftime("%Y%m%d"))
     os.makedirs(a.session, exist_ok=True)
     g = Guide(a)
-    if abs(g.K[0, 0] - 2478.487) < 1e-2:
-        sys.exit("qr_params.yaml still has the sample intrinsics: run m20_intrinsics_calibrate.py --write first")
+    if abs(g.K[0, 0] - 2478.487) < 1e-2 or "INTRINSICS NOT CALIBRATED" in g.ptext:
+        sys.exit(f"{a.params} has no calibrated intrinsics: run m20_intrinsics_capture.py / m20_intrinsics_calibrate.py --write first")
 
     rclpy.init()
     # rclpy takes over SIGTERM to shut ROS down without ending the program: end it too
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     node = Sensors(a.topic)
-    gimbal = LumenGimbal(a.lumen)
+    gimbal = LumenGimbal(a.lumen) if a.camera == "ptz" else FixedMount()
     T_bl, src = lookup_base_lidar(node)
     def spin():
         try:
@@ -409,7 +415,7 @@ def main():
         except Exception:  # noqa: BLE001 - shutdown
             pass
     threading.Thread(target=spin, daemon=True).start()
-    st = Stream(a.url)
+    st = open_camera(a.camera, a.url)
 
     class H(BaseHTTPRequestHandler):
         def _send(self, body, ctype):
@@ -512,8 +518,10 @@ def main():
             gim = gimbal.gimbal(3.0)
             checks = [
                 (gyro is not None and gyro < 0.05, "robot still" if gyro is None or gyro < 0.05 else f"robot moving ({np.degrees(gyro):.1f} deg/s)"),
+            ] + ([] if a.camera != "ptz" else [
                 (gim is not None and np.ptp(gim[:, 0]) < 0.5 and abs(np.median(gim[:, 0]) - a.yaw) < 2.5 and abs(np.median(gim[:, 1]) - a.pitch) < 2.5,
                  f"no gimbal status from Lumen ({gimbal.error})" if gim is None else f"gimbal yaw {np.median(gim[:, 0]):.1f} pitch {np.median(gim[:, 1]):.1f} (want {a.yaw:.0f}/{a.pitch:.0f}, steady)"),
+            ]) + [
                 (seen, "all 4 markers in the picture" if seen else "camera: needs all 4 markers in view"),
             ]
             if seen:

@@ -22,17 +22,19 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from m20_common import BOARD_IDS, HFOV_1X, QR_PARAMS, board_points, set_yaml_values  # noqa: E402
+from m20_common import BOARD_IDS, CAMERAS, HFOV_1X, QR_PARAMS, board_points, set_yaml_values  # noqa: E402
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("dir")
     ap.add_argument("--write", action="store_true", help=f"write fx..p2 into {QR_PARAMS}")
-    ap.add_argument("--params", default=QR_PARAMS)
+    ap.add_argument("--params", help="default: the camera's params file (qr_params.yaml or acoustic_params.yaml)")
     a = ap.parse_args()
 
     b = json.load(open(os.path.join(a.dir, "board.json")))
+    camera = b.get("camera", "ptz")
+    a.params = a.params or CAMERAS[camera]["params"]
     aruco = b.get("type", "chess") == "aruco"
     if aruco:
         obj_by_id = {int(k): np.array(v, np.float32) for k, v in b["corners"].items()}
@@ -96,7 +98,7 @@ def main():
     if abs(cx - size[0] / 2) > 0.05 * size[0] or abs(cy - size[1] / 2) > 0.05 * size[1]:
         warn.append("principal point is far from the centre")
     if g.mean() < 0.75: warn.append("corners do not reach the picture's edges/corners: capture more views there")
-    if abs(hfov - HFOV_1X) > 3: warn.append(f"HFOV {hfov:.1f} deg is not the ~{HFOV_1X} deg of zoom 1x: is the zoom at 1x?")
+    if camera == "ptz" and abs(hfov - HFOV_1X) > 3: warn.append(f"HFOV {hfov:.1f} deg is not the ~{HFOV_1X} deg of zoom 1x: is the zoom at 1x?")
     # error against distance from the image centre: growing outwards = the distortion model is off
     rad, err = [], []
     for j, i in enumerate(keep):
@@ -139,7 +141,8 @@ def main():
 
     out = os.path.join(a.dir, "intrinsics.yaml")
     with open(out, "w") as f:
-        f.write(f"# HIKMICRO HM-TD5767T-7 optical, zoom 1x, {size[0]}x{size[1]} main stream; FAST-Calib model (k3 = 0)\n")
+        f.write(("# HIKMICRO HM-TD5767T-7 optical, zoom 1x" if camera == "ptz" else "# CRYSOUND acoustic camera, REST cameraImage")
+                + f", {size[0]}x{size[1]}; FAST-Calib model (k3 = 0)\n")
         f.write(f"image_width: {size[0]}\nimage_height: {size[1]}\n")
         for k, v in dict(fx=fx, fy=fy, cx=cx, cy=cy, k1=k1, k2=k2, p1=p1, p2=p2).items():
             f.write(f"{k}: {v:.6f}\n")
@@ -150,7 +153,7 @@ def main():
 
     if a.write:
         shutil.copy(a.params, a.params + ".bak")
-        text = open(a.params).read()
+        text = open(a.params).read().replace("    # INTRINSICS NOT CALIBRATED: seed from the camera's 50 deg field of view, no distortion\n", "")
         text = set_yaml_values(text, dict(fx=float(fx), fy=float(fy), cx=float(cx), cy=float(cy),
                                           k1=float(k1), k2=float(k2), p1=float(p1), p2=float(p2)))
         open(a.params, "w").write(text)

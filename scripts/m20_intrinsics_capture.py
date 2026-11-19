@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Capture calibration-target views from the PTZ stream (HIKMICRO optical; m20_intrinsics_from_stereo.py is the better source) for the camera intrinsics.
+"""Capture calibration-target views from the PTZ stream, or the acoustic camera (--camera acoustic), (HIKMICRO optical; m20_intrinsics_from_stereo.py is the better source) for the camera intrinsics.
 
 The target is the FAST-Calib board itself (its four ArUco markers, geometry from
 config/qr_params.yaml -- measure the board first), or a printed checkerboard (--cols/--rows).
@@ -25,7 +25,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from m20_common import (QR_PARAMS, REPO, RTSP_URL, STREAM_SIZE, Stream,  # noqa: E402
+from m20_common import (CAMERAS, REPO, open_camera,  # noqa: E402
                         board_marker_corners, board_points)
 
 GRID = (4, 3)  # coverage cells across, down
@@ -76,22 +76,25 @@ def main():
     ap.add_argument("--cols", type=int, help="checkerboard inner corners across (omit for the ArUco board)")
     ap.add_argument("--rows", type=int, help="checkerboard inner corners down")
     ap.add_argument("--square", type=float, help="checkerboard square size, metres")
-    ap.add_argument("--params", default=QR_PARAMS, help="ArUco board geometry (marker_size, delta_*_qr_center)")
-    ap.add_argument("--out", default=os.path.join(REPO, "calib_data", "intrinsics"))
-    ap.add_argument("--url", default=RTSP_URL)
+    ap.add_argument("--camera", choices=sorted(CAMERAS), default="ptz", help="ptz (HIKMICRO) or acoustic (CRYSOUND, fixed)")
+    ap.add_argument("--params", help="ArUco board geometry (marker_size, delta_*_qr_center); default: the camera's params file")
+    ap.add_argument("--out", help="default calib_data/intrinsics (ptz) or calib_data/intrinsics_acoustic")
+    ap.add_argument("--url", help="camera stream (default: the camera's)")
     ap.add_argument("--target", type=int, default=45, help="views to keep")
     ap.add_argument("--novelty", type=float, default=0.08, help="min pose difference to keep a view")
     ap.add_argument("--port", type=int, default=8098, help="live preview page, 0 = off")
     a = ap.parse_args()
+    a.params = a.params or CAMERAS[a.camera]["params"]
+    a.out = a.out or os.path.join(REPO, "calib_data", "intrinsics" + ("" if a.camera == "ptz" else "_" + a.camera))
     chess = a.cols is not None
     if chess and not (a.rows and a.square):
         sys.exit("a checkerboard needs --cols, --rows and --square")
     os.makedirs(a.out, exist_ok=True)
     if chess:
-        board = {"type": "chess", "cols": a.cols, "rows": a.rows, "square": a.square}
+        board = {"type": "chess", "cols": a.cols, "rows": a.rows, "square": a.square, "camera": a.camera}
     else:
         obj_by_id = board_marker_corners(open(a.params).read())
-        board = {"type": "aruco", "corners": {str(k): v.tolist() for k, v in obj_by_id.items()}}
+        board = {"type": "aruco", "camera": a.camera, "corners": {str(k): v.tolist() for k, v in obj_by_id.items()}}
         c2, c4 = obj_by_id[2].mean(0), obj_by_id[4].mean(0)
         print(f"ArUco board from {a.params}: marker {obj_by_id[1][1, 0] - obj_by_id[1][0, 0]:.3f} m, "
               f"centres {2 * c2[0]:.3f} x {c2[1] - c4[1]:.3f} m apart (check these against the tape measure)")
@@ -105,8 +108,8 @@ def main():
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         print(f"live preview: http://<robot-ip>:{a.port}")
 
-    st = Stream(a.url)
-    w, h = STREAM_SIZE
+    st = open_camera(a.camera, a.url)
+    w, h = CAMERAS[a.camera]["size"]
     saved, poses, last, last_p = [], [], 0, None
     n_id = len([f for f in os.listdir(a.out) if f.endswith(".png")])
     if n_id:
@@ -177,7 +180,7 @@ def main():
     finally:
         st.close()
     print(f"\n{len(saved)} new views in {a.out}. Coverage (views per cell):\n{coverage(saved, w, h)}")
-    print(f"next: python3 scripts/m20_intrinsics_calibrate.py {a.out}")
+    print(f"next: python3 scripts/m20_intrinsics_calibrate.py {a.out}" + (f" --params {a.params}" if a.camera != "ptz" else ""))
 
 
 if __name__ == "__main__":

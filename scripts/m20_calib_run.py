@@ -216,11 +216,15 @@ def main():
         print(f"    LUMEN_GIMBAL_FORWARD_AZIMUTH={fix['forward_azimuth']:.1f}")
         print(f"    LUMEN_GIMBAL_LEVEL_ELEVATION={fix['level_elevation']:.1f}")
         print("  (the head turns in 0.1 deg steps; roll cannot be corrected by the head)")
-    print("  The PTZ extrinsics for the orchestrator (/ptz/extrinsics, used to aim at map targets), with")
-    print("  the offsets left at 0 once Lumen's zero is set as above (do not correct the same error twice):")
-    print(f'    {{"x": {T_bc[0, 3]:.3f}, "y": {T_bc[1, 3]:.3f}, "z": {T_bc[2, 3]:.3f}, "yaw_sign": -1, '
-          f'"yaw_offset_deg": 0.0, "pitch_offset_deg": 0.0}}')
-    print("  (x, y, z is the lens at yaw 0; the head's pivot is a few cm behind it, which matters little beyond ~1.5 m)")
+    fixed = metas[0].get("camera", "ptz") != "ptz"
+    if fixed:
+        print(f"  fixed camera ({metas[0]['camera']}): x, y, z and yaw / pitch / roll above are its mount in base_link")
+    else:
+        print("  The PTZ extrinsics for the orchestrator (/ptz/extrinsics, used to aim at map targets), with")
+        print("  the offsets left at 0 once Lumen's zero is set as above (do not correct the same error twice):")
+        print(f'    {{"x": {T_bc[0, 3]:.3f}, "y": {T_bc[1, 3]:.3f}, "z": {T_bc[2, 3]:.3f}, "yaw_sign": -1, '
+              f'"yaw_offset_deg": 0.0, "pitch_offset_deg": 0.0}}')
+        print("  (x, y, z is the lens at yaw 0; the head's pivot is a few cm behind it, which matters little beyond ~1.5 m)")
     # the hole rectangle is 180-deg symmetric: holes matched the wrong way round fit just as well
     # and turn the camera upside down about its own axis
     if abs(roll) > 10:
@@ -238,17 +242,27 @@ def main():
 
     f = lambda M: "[" + ", ".join(f"{x:.6f}" for x in M.ravel()) + "]"  # noqa: E731
     with open(os.path.join(out, "camera_extrinsics.yaml"), "w") as fo:
-        fo.write(f"# M20 HIKMICRO PTZ <-> front LiDAR, FAST-Calib {time.strftime('%Y-%m-%d %H:%M')}, scenes {names}\n")
-        fo.write("# Valid only at this gimbal angle and zoom. Row-major 4x4.\n")
-        fo.write(f"gimbal_attitude: {metas[0]['gimbal_attitude_median']}   # Lumen: yaw + right, pitch + up\n"
-                 f"zoom_level: {metas[0]['zoom_level']}\n")
+        if fixed:
+            fo.write(f"# M20 {metas[0]['camera']} camera (fixed) <-> front LiDAR, FAST-Calib {time.strftime('%Y-%m-%d %H:%M')}, scenes {names}\n")
+            fo.write("# Row-major 4x4.\n")
+        else:
+            fo.write(f"# M20 HIKMICRO PTZ <-> front LiDAR, FAST-Calib {time.strftime('%Y-%m-%d %H:%M')}, scenes {names}\n")
+            fo.write("# Valid only at this gimbal angle and zoom. Row-major 4x4.\n")
+        if not fixed:
+            fo.write(f"gimbal_attitude: {metas[0]['gimbal_attitude_median']}   # Lumen: yaw + right, pitch + up\n"
+                     f"zoom_level: {metas[0]['zoom_level']}\n")
         fo.write(f"camera_looking_deg: {{yaw_left: {yaw:.3f}, pitch_down: {pitch:.3f}, roll: {roll:.3f}}}   # in base_link\n")
-        fo.write(f"lumen_gimbal_zero_at_capture: {json.dumps(zero)}\n")
+        if fixed:
+            fo.write(f"camera_mount: {{x: {T_bc[0, 3]:.4f}, y: {T_bc[1, 3]:.4f}, z: {T_bc[2, 3]:.4f}, yaw_left: {yaw:.3f}, "
+                     f"pitch_down: {pitch:.3f}, roll: {roll:.3f}}}   # base_link, m and deg\n")
+        else:
+            fo.write(f"lumen_gimbal_zero_at_capture: {json.dumps(zero)}\n")
         if fix:
             fo.write(f"lumen_gimbal_zero_corrected: {{forward_azimuth: {fix['forward_azimuth']:.1f}, "
                      f"level_elevation: {fix['level_elevation']:.1f}}}   # LUMEN_GIMBAL_FORWARD_AZIMUTH / LEVEL_ELEVATION\n")
-        fo.write(f"ptz_extrinsics: {{x: {T_bc[0, 3]:.4f}, y: {T_bc[1, 3]:.4f}, z: {T_bc[2, 3]:.4f}, yaw_sign: -1, "
-                 f"yaw_offset_deg: 0.0, pitch_offset_deg: 0.0}}   # orchestrator /ptz/extrinsics\n")
+        if not fixed:
+            fo.write(f"ptz_extrinsics: {{x: {T_bc[0, 3]:.4f}, y: {T_bc[1, 3]:.4f}, z: {T_bc[2, 3]:.4f}, yaw_sign: -1, "
+                     f"yaw_offset_deg: 0.0, pitch_offset_deg: 0.0}}   # orchestrator /ptz/extrinsics\n")
         fo.write(f"image_width: {cv2.imread(os.path.join(scenes[0], 'image.png')).shape[1]}\n")
         for k in ("fx", "fy", "cx", "cy", "k1", "k2", "p1", "p2"):
             fo.write(f"{k}: {get_yaml_value(ptext, k)}\n")

@@ -1,5 +1,8 @@
 # M20: HIKMICRO PTZ <-> front LiDAR
 
+(The fixed CRYSOUND acoustic camera uses the same tools with `--camera acoustic`:
+[`calibration/m20_acoustic/`](../calibration/m20_acoustic/README.md).)
+
 **The current result, its parameters and how to use them at any gimbal angle and zoom:
 [`calibration/m20_hikmicro/`](../calibration/m20_hikmicro/README.md).** This page is how to redo it.
 
