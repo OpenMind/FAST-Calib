@@ -1,0 +1,13 @@
+# CRYSOUND acoustic camera, REST cameraImage, 1920x1080; FAST-Calib model (k3 = 0)
+image_width: 1920
+image_height: 1080
+fx: 1535.274814
+fy: 1150.663912
+cx: 1026.933402
+cy: 536.085377
+k1: 0.002285
+k2: -0.074152
+p1: 0.002554
+p2: 0.000400
+rms_px: 1.0398
+views: 44
